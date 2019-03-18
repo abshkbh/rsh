@@ -1,5 +1,6 @@
 #![allow(unused)]
 use nix::sys::signal::*;
+use nix::sys::signalfd::*;
 use nix::sys::wait::*;
 use nix::unistd::*;
 use nix::Error;
@@ -57,7 +58,15 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn maybe_run_in_built_cmd(&self, cmd: &String) -> bool {
+    pub fn run_cmd(&mut self, cmd: String) {
+        // Process the command.
+        if (!Self::maybe_run_in_built_cmd(self, &cmd)) {
+            Self::fork_and_run_cmd(self, cmd);
+        }
+    }
+
+    pub fn maybe_run_in_built_cmd(&mut self, cmd: &String) -> bool {
+        println!("Run inbuilt cmd {}", cmd);
         match cmd.as_ref() {
             "quit" => {
                 println!("quit");
@@ -76,12 +85,56 @@ impl Shell {
         }
     }
 
+    pub fn fork_and_run_cmd(&mut self, cmd: String) {
+        println!("Run new process");
+        let result = fork();
+        match result {
+            Ok(ForkResult::Parent { child }) => {
+                println!("In the parent child pid {}", child);
+                self.fg = Some(child);
+                self.jobs.push(Job {
+                    pid: child,
+                    cmd_line: cmd,
+                    state: JobState::Foreground,
+                });
+                match wait() {
+                    // TODO: More specific matching for T.
+                    Ok(t) => println!("Child exited"),
+                    Err(_) => println!("Don't care"),
+                }
+                println!("After child exit");
+            }
+
+            Ok(ForkResult::Child) => {
+                println!("In the child");
+                // TODO: Call execvp here.
+            }
+
+            Err(_) => println!("Fork failed"),
+        }
+    }
+
     fn print_jobs(&self) {
         println!("Jobs");
         for job in &self.jobs {
             println!("{}", job)
         }
     }
+}
+
+#[no_mangle]
+extern "C" fn sigint_handler(arg: libc::c_int) {
+    println!("SIGINT");
+}
+
+#[no_mangle]
+extern "C" fn sigchld_handler(arg: libc::c_int) {
+    println!("SIGCHLD");
+}
+
+#[no_mangle]
+extern "C" fn sigtstp_handler(arg: libc::c_int) {
+    println!("SIGSTP");
 }
 
 unsafe fn install_signal_handler(signum: Signal, sig_handler: SigHandler) {
@@ -101,41 +154,12 @@ fn block_signal(sigset: Option<&SigSet>) {
     }
 }
 
-#[no_mangle]
-extern "C" fn sigint_handler(arg: libc::c_int) {
-    println!("SIGINT");
-}
-
-#[no_mangle]
-extern "C" fn sigchld_handler(arg: libc::c_int) {
-    println!("SIGCHLD");
-}
-
-#[no_mangle]
-extern "C" fn sigtstp_handler(arg: libc::c_int) {
-    println!("SIGSTP");
-}
-
 fn main() -> io::Result<()> {
     println!("Welcome to my shell");
-    let shell = Shell {
+    let mut shell = Shell {
         fg: None,
         jobs: vec![],
     };
-
-    // Install the handlers for SIGINT, SIGCHLD, SIGTSTP.
-    unsafe {
-        install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
-        install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
-        install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
-    }
-
-    // Block SIGINT, SIGCHLD, SIGTSTP till command is being parsed.
-    let mut sigset = SigSet::empty();
-    sigset.add(Signal::SIGINT);
-    sigset.add(Signal::SIGCHLD);
-    sigset.add(Signal::SIGTSTP);
-    block_signal(Some(&sigset));
 
     // Spawn a thread to handle IO. This is done to keep the main thread free to handle signals.
     let (cmd_line_tx, cmd_line_rx) = mpsc::channel();
@@ -154,22 +178,45 @@ fn main() -> io::Result<()> {
         }
     });
 
+     
+    // Install the handlers for SIGINT, SIGCHLD, SIGTSTP. This is done to
+    // override the default behavior of these signals and to use the signal fd
+    // API.
+    unsafe {
+        install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
+        install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
+        install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
+    }
+
+    // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
+    // so that these signals can be handled on the main thread in a race free
+    // manner.
+    let mut sigset = SigSet::empty();
+    sigset.add(Signal::SIGINT);
+    sigset.add(Signal::SIGCHLD);
+    sigset.add(Signal::SIGTSTP);
+    let mut sfd = SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).unwrap();
+
     // Loop to process events after periodic sleep.
     loop {
-        // Check and process command line.
+        // Check and process command line in a non-blocking way.
         match cmd_line_rx.try_recv() {
-            Ok(command) => {
-                // Process the command.
-                if (!shell.maybe_run_in_built_cmd(&command)) {
-                    // TODO: Fork and exec here.
-                    println!("Run process")
-                }
-            }
+            Ok(cmd) => shell.run_cmd(cmd),
 
             Err(e) => match e {
                 mpsc::TryRecvError::Disconnected => panic!("IO thread should not be killed"),
                 _ => (),
             },
+        }
+
+        // Check and process signals in a non-blocking way.
+        match sfd.read_signal() {
+            // Handle signal.
+            Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
+            // No signal occured.
+            Ok(None) => (),
+            // Some error happened.
+            Err(_) => (),
         }
 
         thread::sleep(Duration::from_millis(10));
