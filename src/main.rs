@@ -7,6 +7,9 @@ use std::fmt;
 use std::io::{self, Read};
 use std::process;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 pub enum InBuiltCmd {
     Quit,
@@ -120,36 +123,57 @@ fn main() -> io::Result<()> {
         jobs: vec![],
     };
 
-    loop {
-        // Install the handlers for SIGINT, SIGCHLD, SIGTSTP.
-        unsafe {
-            install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
-            install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
-            install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
-        }
-
-        // Block SIGINT, SIGCHLD, SIGTSTP till command is being parsed.
-        let mut sigset = SigSet::empty();
-        sigset.add(Signal::SIGINT);
-        sigset.add(Signal::SIGCHLD);
-        sigset.add(Signal::SIGTSTP);
-        block_signal(Some(&sigset));
-
-        // Parse command.
-        let mut command = String::new();
-        match io::stdin().read_line(&mut command) {
-            Ok(_) => {
-                // Remove trailing characters.
-                command = command.trim().to_string();
-            }
-            Err(error) => println!("Error reading command"),
-        }
-
-        // Process the command.
-        if (!shell.maybe_run_in_built_cmd(&command)) {
-            // TODO: Fork and exec here.
-            println!("Run process")
-        }
+    // Install the handlers for SIGINT, SIGCHLD, SIGTSTP.
+    unsafe {
+        install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
+        install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
+        install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
     }
+
+    // Block SIGINT, SIGCHLD, SIGTSTP till command is being parsed.
+    let mut sigset = SigSet::empty();
+    sigset.add(Signal::SIGINT);
+    sigset.add(Signal::SIGCHLD);
+    sigset.add(Signal::SIGTSTP);
+    block_signal(Some(&sigset));
+
+    // Spawn a thread to handle IO. This is done to keep the main thread free to handle signals.
+    let (cmd_line_tx, cmd_line_rx) = mpsc::channel();
+    thread::spawn(move || {
+        loop {
+            let mut command = String::new();
+            match io::stdin().read_line(&mut command) {
+                Ok(_) => {
+                    // Remove trailing characters.
+                    command = command.trim().to_string();
+                    cmd_line_tx.send(command).expect("Failed to send command");
+                }
+
+                Err(error) => println!("Error reading command"),
+            }
+        }
+    });
+
+    // Loop to process events after periodic sleep.
+    loop {
+        // Check and process command line.
+        match cmd_line_rx.try_recv() {
+            Ok(command) => {
+                // Process the command.
+                if (!shell.maybe_run_in_built_cmd(&command)) {
+                    // TODO: Fork and exec here.
+                    println!("Run process")
+                }
+            }
+
+            Err(e) => match e {
+                mpsc::TryRecvError::Disconnected => panic!("IO thread should not be killed"),
+                _ => (),
+            },
+        }
+
+        thread::sleep(Duration::from_millis(10));
+    }
+
     Ok(())
 }
