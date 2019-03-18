@@ -2,6 +2,7 @@
 use nix::sys::signal::*;
 use nix::sys::wait::*;
 use nix::unistd::*;
+use nix::Error;
 use std::fmt;
 use std::io::{self, Read};
 use std::process;
@@ -80,6 +81,38 @@ impl Shell {
     }
 }
 
+unsafe fn install_signal_handler(signum: Signal, sig_handler: SigHandler) {
+    let mut sigset = SigSet::empty();
+    // Restart syscalls and block signals of the same type if this signal is being processed.
+    let mut sa_flags = SaFlags::empty();
+    sa_flags.insert(SaFlags::SA_RESTART);
+    let sig_action = SigAction::new(sig_handler, sa_flags, SigSet::empty());
+    // This is safe to do as |sig_action| is in the stack initialized before this.
+    sigaction(signum, &sig_action).expect("Failed to install handler for signal");
+}
+
+fn block_signal(sigset: Option<&SigSet>) {
+    match sigprocmask(SigmaskHow::SIG_BLOCK, sigset, None) {
+        Ok(_) => (),
+        _ => panic!("Failed to block signal"),
+    }
+}
+
+#[no_mangle]
+extern "C" fn sigint_handler(arg: libc::c_int) {
+    println!("SIGINT");
+}
+
+#[no_mangle]
+extern "C" fn sigchld_handler(arg: libc::c_int) {
+    println!("SIGCHLD");
+}
+
+#[no_mangle]
+extern "C" fn sigtstp_handler(arg: libc::c_int) {
+    println!("SIGSTP");
+}
+
 fn main() -> io::Result<()> {
     println!("Welcome to my shell");
     let shell = Shell {
@@ -88,6 +121,20 @@ fn main() -> io::Result<()> {
     };
 
     loop {
+        // Install the handlers for SIGINT, SIGCHLD, SIGTSTP.
+        unsafe {
+            install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
+            install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
+            install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
+        }
+
+        // Block SIGINT, SIGCHLD, SIGTSTP till command is being parsed.
+        let mut sigset = SigSet::empty();
+        sigset.add(Signal::SIGINT);
+        sigset.add(Signal::SIGCHLD);
+        sigset.add(Signal::SIGTSTP);
+        block_signal(Some(&sigset));
+
         // Parse command.
         let mut command = String::new();
         match io::stdin().read_line(&mut command) {
