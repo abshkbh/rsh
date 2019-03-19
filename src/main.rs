@@ -88,6 +88,8 @@ impl Shell {
     pub fn fork_and_run_cmd(&mut self, cmd: String) {
         println!("Run new process");
         let result = fork();
+        let bg_process = cmd.ends_with("&");
+        println!("Is Bg Process: {}", bg_process);
         match result {
             Ok(ForkResult::Parent { child }) => {
                 println!("In the parent child pid {}", child);
@@ -97,16 +99,20 @@ impl Shell {
                     cmd_line: cmd,
                     state: JobState::Foreground,
                 });
+
                 match wait() {
                     // TODO: More specific matching for T.
                     Ok(t) => println!("Child exited"),
-                    Err(_) => println!("Don't care"),
+                    Err(_) => println!("Child reaped"),
                 }
                 println!("After child exit");
             }
 
             Ok(ForkResult::Child) => {
                 println!("In the child");
+                // Unblock all signals in the child.
+                let sigset = SigSet::all();
+                unblock_signal(Some(&sigset));
                 // TODO: Call execvp here.
             }
 
@@ -122,21 +128,6 @@ impl Shell {
     }
 }
 
-#[no_mangle]
-extern "C" fn sigint_handler(arg: libc::c_int) {
-    println!("SIGINT");
-}
-
-#[no_mangle]
-extern "C" fn sigchld_handler(arg: libc::c_int) {
-    println!("SIGCHLD");
-}
-
-#[no_mangle]
-extern "C" fn sigtstp_handler(arg: libc::c_int) {
-    println!("SIGSTP");
-}
-
 unsafe fn install_signal_handler(signum: Signal, sig_handler: SigHandler) {
     let mut sigset = SigSet::empty();
     // Restart syscalls and block signals of the same type if this signal is being processed.
@@ -149,6 +140,13 @@ unsafe fn install_signal_handler(signum: Signal, sig_handler: SigHandler) {
 
 fn block_signal(sigset: Option<&SigSet>) {
     match sigprocmask(SigmaskHow::SIG_BLOCK, sigset, None) {
+        Ok(_) => (),
+        _ => panic!("Failed to block signal"),
+    }
+}
+
+fn unblock_signal(sigset: Option<&SigSet>) {
+    match sigprocmask(SigmaskHow::SIG_UNBLOCK, sigset, None) {
         Ok(_) => (),
         _ => panic!("Failed to block signal"),
     }
@@ -177,25 +175,23 @@ fn main() -> io::Result<()> {
             }
         }
     });
-
-     
-    // Install the handlers for SIGINT, SIGCHLD, SIGTSTP. This is done to
-    // override the default behavior of these signals and to use the signal fd
-    // API.
-    unsafe {
-        install_signal_handler(Signal::SIGINT, SigHandler::Handler(sigint_handler));
-        install_signal_handler(Signal::SIGCHLD, SigHandler::Handler(sigchld_handler));
-        install_signal_handler(Signal::SIGTSTP, SigHandler::Handler(sigtstp_handler));
-    }
-
+    
     // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
     // so that these signals can be handled on the main thread in a race free
-    // manner.
+    // manner. These signals also need to be blocked first to prevent their
+    // default actions.
     let mut sigset = SigSet::empty();
     sigset.add(Signal::SIGINT);
     sigset.add(Signal::SIGCHLD);
     sigset.add(Signal::SIGTSTP);
-    let mut sfd = SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).unwrap();
+    block_signal(Some(&sigset));
+    // Set singal fd to be non blocking in order to not block the main shell
+    // prompt. Also, close it on exec as it won't be needed for child processes
+    // forked by the shell.
+    let mut sfd_flags = SfdFlags::empty();
+    sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
+    sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
+    let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
 
     // Loop to process events after periodic sleep.
     loop {
