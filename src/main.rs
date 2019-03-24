@@ -4,6 +4,7 @@ use nix::sys::signalfd::*;
 use nix::sys::wait::*;
 use nix::unistd::*;
 use nix::Error;
+use std::ffi::CString;
 use std::fmt;
 use std::io::{self, Read};
 use std::process;
@@ -66,7 +67,6 @@ impl Shell {
     }
 
     pub fn maybe_run_in_built_cmd(&mut self, cmd: &String) -> bool {
-        println!("Run inbuilt cmd {}", cmd);
         match cmd.as_ref() {
             "quit" => {
                 println!("quit");
@@ -86,13 +86,12 @@ impl Shell {
     }
 
     pub fn fork_and_run_cmd(&mut self, cmd: String) {
-        println!("Run new process");
-        let result = fork();
         let bg_process = cmd.ends_with("&");
-        println!("Is Bg Process: {}", bg_process);
+        println!("Run new process bg: {}", bg_process);
+        let result = fork();
         match result {
             Ok(ForkResult::Parent { child }) => {
-                println!("In the parent child pid {}", child);
+                println!("In the Parent - Child's pid {}", child);
                 self.fg = Some(child);
                 self.jobs.push(Job {
                     pid: child,
@@ -102,18 +101,44 @@ impl Shell {
 
                 match wait() {
                     // TODO: More specific matching for T.
-                    Ok(t) => println!("Child exited"),
+                    Ok(t) => match t {
+                        WaitStatus::Exited(pid, status) => {
+                            println!("{} exited with {}", pid, status)
+                        }
+                        WaitStatus::Stopped(pid, signal) => {
+                            println!("{} stopped due to signal {}", pid, signal)
+                        }
+                        WaitStatus::Signaled(pid, signal, is_coredump) => println!(
+                            "{} signaled due to signal {} coredumped {}",
+                            pid, signal, is_coredump
+                        ),
+                        _ => println!("Unexpected wait error"),
+                    },
                     Err(_) => println!("Child reaped"),
                 }
                 println!("After child exit");
             }
 
             Ok(ForkResult::Child) => {
-                println!("In the child");
+                println!("In the child {}", cmd);
+
                 // Unblock all signals in the child.
                 let sigset = SigSet::all();
                 unblock_signal(Some(&sigset));
-                // TODO: Call execvp here.
+
+                let filename = if let Ok(filename) = CString::new(cmd) {
+                    filename
+                } else {
+                    println!("No command given");
+                    return;
+                };
+
+                // Parse args.
+                let mut args: [CString; 0] = [];
+                match nix::unistd::execvp(&filename, &args) {
+                    Err(e) => println!("Failed to exec {}", e),
+                    _ => (),
+                }
             }
 
             Err(_) => println!("Fork failed"),
@@ -153,11 +178,30 @@ fn unblock_signal(sigset: Option<&SigSet>) {
 }
 
 fn main() -> io::Result<()> {
-    println!("Welcome to my shell");
     let mut shell = Shell {
         fg: None,
         jobs: vec![],
     };
+
+    // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
+    // so that these signals can be handled on the main thread in a race free
+    // manner. These signals also need to be blocked first to prevent their
+    // default actions.
+    let mut sigset = SigSet::empty();
+    sigset.add(Signal::SIGINT);
+    sigset.add(Signal::SIGCHLD);
+    sigset.add(Signal::SIGTSTP);
+    block_signal(Some(&sigset));
+
+    // Set signal fd to be non blocking in order to not block the main shell
+    // prompt. Also, close it on exec as it won't be needed for child processes
+    // forked by the shell.
+    let mut sfd_flags = SfdFlags::empty();
+    sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
+    sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
+    let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
+
+    println!("Welcome to my shell");
 
     // Spawn a thread to handle IO. This is done to keep the main thread free to handle signals.
     let (cmd_line_tx, cmd_line_rx) = mpsc::channel();
@@ -175,23 +219,6 @@ fn main() -> io::Result<()> {
             }
         }
     });
-    
-    // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
-    // so that these signals can be handled on the main thread in a race free
-    // manner. These signals also need to be blocked first to prevent their
-    // default actions.
-    let mut sigset = SigSet::empty();
-    sigset.add(Signal::SIGINT);
-    sigset.add(Signal::SIGCHLD);
-    sigset.add(Signal::SIGTSTP);
-    block_signal(Some(&sigset));
-    // Set singal fd to be non blocking in order to not block the main shell
-    // prompt. Also, close it on exec as it won't be needed for child processes
-    // forked by the shell.
-    let mut sfd_flags = SfdFlags::empty();
-    sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
-    sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
-    let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
 
     // Loop to process events after periodic sleep.
     loop {
