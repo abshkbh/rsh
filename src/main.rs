@@ -99,8 +99,8 @@ impl Shell {
                     state: JobState::Foreground,
                 });
 
+                println!("Waiting for child to exit");
                 match wait() {
-                    // TODO: More specific matching for T.
                     Ok(t) => match t {
                         WaitStatus::Exited(pid, status) => {
                             println!("{} exited with {}", pid, status)
@@ -123,7 +123,10 @@ impl Shell {
                 println!("In the child {}", cmd);
 
                 // Unblock all signals in the child.
-                let sigset = SigSet::all();
+                let mut sigset = SigSet::empty();
+                sigset.add(Signal::SIGINT);
+                sigset.add(Signal::SIGCHLD);
+                sigset.add(Signal::SIGTSTP);
                 unblock_signal(Some(&sigset));
 
                 let filename = if let Ok(filename) = CString::new(cmd) {
@@ -136,7 +139,10 @@ impl Shell {
                 // Parse args.
                 let mut args: [CString; 0] = [];
                 match nix::unistd::execvp(&filename, &args) {
-                    Err(e) => println!("Failed to exec {}", e),
+                    Err(e) => {
+                        println!("Failed to exec {}", e);
+                        process::exit(-1);
+                    }
                     _ => (),
                 }
             }
@@ -212,6 +218,7 @@ fn main() -> io::Result<()> {
                 Ok(_) => {
                     // Remove trailing characters.
                     command = command.trim().to_string();
+                    println!("New command: {}", command);
                     cmd_line_tx.send(command).expect("Failed to send command");
                 }
 
