@@ -98,25 +98,6 @@ impl Shell {
                     cmd_line: cmd,
                     state: JobState::Foreground,
                 });
-
-                println!("Waiting for child to exit");
-                match wait() {
-                    Ok(t) => match t {
-                        WaitStatus::Exited(pid, status) => {
-                            println!("{} exited with {}", pid, status)
-                        }
-                        WaitStatus::Stopped(pid, signal) => {
-                            println!("{} stopped due to signal {}", pid, signal)
-                        }
-                        WaitStatus::Signaled(pid, signal, is_coredump) => println!(
-                            "{} signaled due to signal {} coredumped {}",
-                            pid, signal, is_coredump
-                        ),
-                        _ => println!("Unexpected wait error"),
-                    },
-                    Err(_) => println!("Child reaped"),
-                }
-                println!("After child exit");
             }
 
             Ok(ForkResult::Child) => {
@@ -226,22 +207,58 @@ fn main() -> io::Result<()> {
     println!("Welcome to my shell");
 
     // Loop to process events after periodic sleep.
+    let mut wait_for_new_cmd = true;
     loop {
-        let mut cmd = String::new();
-        match io::stdin().read_line(&mut cmd) {
-            Ok(_) => {
-                // Remove trailing characters.
-                cmd = cmd.trim().to_string();
-                // Blocks if a foreground process is run.
-                if (!cmd.is_empty()) {
-                    println!("New cmd: {}", cmd);
-                    shell.run_cmd(cmd);
+        if wait_for_new_cmd {
+            let mut cmd = String::new();
+            match io::stdin().read_line(&mut cmd) {
+                Ok(_) => {
+                    // Remove trailing characters.
+                    cmd = cmd.trim().to_string();
+                    // Blocks if a foreground process is run.
+                    if (!cmd.is_empty()) {
+                        println!("New cmd: {}", cmd);
+                        shell.run_cmd(cmd);
+                    }
                 }
-            }
 
-            Err(error) => println!("Error reading cmd"),
+                Err(error) => println!("Error reading cmd"),
+            }
         }
 
+        println!("Waiting to reap children");
+        let mut flags = WaitPidFlag::empty();
+        flags.set(WaitPidFlag::WNOHANG, true);
+        flags.set(WaitPidFlag::WUNTRACED, true);
+        match waitpid(None, Some(flags)) {
+            Ok(t) => match t {
+                WaitStatus::Exited(pid, status) => {
+                    wait_for_new_cmd = true;
+                    println!("{} exited with {}", pid, status);
+                }
+                WaitStatus::Stopped(pid, signal) => {
+                    wait_for_new_cmd = true;
+                    println!("{} stopped due to signal {}", pid, signal)
+                }
+                WaitStatus::Signaled(pid, signal, is_coredump) => {
+                    wait_for_new_cmd = true;
+                    println!(
+                        "{} signaled due to signal {} coredumped {}",
+                        pid, signal, is_coredump
+                    );
+                }
+                WaitStatus::Continued(pid) => println!("{} continued", pid),
+                WaitStatus::StillAlive => {
+                    wait_for_new_cmd = false;
+                    println!("Children still alive");
+                }
+                _ => println!("Ptrace event"),
+            },
+
+            Err(e) => println!("Wait error {}", e),
+        }
+
+        println!("Waiting for signals");
         // Check and process signals in a non-blocking way.
         match sfd.read_signal() {
             // Handle signal.
@@ -252,7 +269,7 @@ fn main() -> io::Result<()> {
             Err(_) => (),
         }
 
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_secs(1));
     }
 
     Ok(())
