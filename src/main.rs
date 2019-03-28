@@ -122,6 +122,20 @@ impl Shell {
             Ok(ForkResult::Child) => {
                 println!("In the child {}", cmd);
 
+                // Set new process group for the child. The gid will be the pid
+                // of the new process.
+                match nix::unistd::setpgid(
+                    nix::unistd::Pid::from_raw(0),
+                    nix::unistd::Pid::from_raw(0),
+                ) {
+                    Err(e) => {
+                        println!("Failed to setpgid error: {}", e);
+                        process::exit(-1);
+                        return;
+                    }
+                    _ => (),
+                }
+
                 // Unblock all signals in the child.
                 let mut sigset = SigSet::empty();
                 sigset.add(Signal::SIGINT);
@@ -133,6 +147,7 @@ impl Shell {
                     filename
                 } else {
                     println!("No command given");
+                    process::exit(-1);
                     return;
                 };
 
@@ -140,6 +155,7 @@ impl Shell {
                 let mut args: [CString; 0] = [];
                 match nix::unistd::execvp(&filename, &args) {
                     Err(e) => {
+                        // Exit the forked process if exec-ing command has failed.
                         println!("Failed to exec {}", e);
                         process::exit(-1);
                     }
@@ -209,34 +225,21 @@ fn main() -> io::Result<()> {
 
     println!("Welcome to my shell");
 
-    // Spawn a thread to handle IO. This is done to keep the main thread free to handle signals.
-    let (cmd_line_tx, cmd_line_rx) = mpsc::channel();
-    thread::spawn(move || {
-        loop {
-            let mut command = String::new();
-            match io::stdin().read_line(&mut command) {
-                Ok(_) => {
-                    // Remove trailing characters.
-                    command = command.trim().to_string();
-                    println!("New command: {}", command);
-                    cmd_line_tx.send(command).expect("Failed to send command");
-                }
-
-                Err(error) => println!("Error reading command"),
-            }
-        }
-    });
-
     // Loop to process events after periodic sleep.
     loop {
-        // Check and process command line in a non-blocking way.
-        match cmd_line_rx.try_recv() {
-            Ok(cmd) => shell.run_cmd(cmd),
+        let mut cmd = String::new();
+        match io::stdin().read_line(&mut cmd) {
+            Ok(_) => {
+                // Remove trailing characters.
+                cmd = cmd.trim().to_string();
+                // Blocks if a foreground process is run.
+                if (!cmd.is_empty()) {
+                    println!("New cmd: {}", cmd);
+                    shell.run_cmd(cmd);
+                }
+            }
 
-            Err(e) => match e {
-                mpsc::TryRecvError::Disconnected => panic!("IO thread should not be killed"),
-                _ => (),
-            },
+            Err(error) => println!("Error reading cmd"),
         }
 
         // Check and process signals in a non-blocking way.
