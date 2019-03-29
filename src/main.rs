@@ -1,5 +1,7 @@
 #![allow(unused)]
+use nix::sys::epoll::*;
 use nix::sys::signal::*;
+use nix::sys::signalfd::SignalFd;
 use nix::sys::signalfd::*;
 use nix::sys::wait::*;
 use nix::unistd::*;
@@ -7,6 +9,7 @@ use nix::Error;
 use std::ffi::CString;
 use std::fmt;
 use std::io::{self, Read};
+use std::os::unix::io::AsRawFd;
 use std::process;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -203,9 +206,61 @@ fn main() -> io::Result<()> {
     sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
     sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
     let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
+    let sfd_u64 = sfd.as_raw_fd() as u64;
+    println!("Sfd val: {}", sfd.as_raw_fd());
+
+    // Create epoll fd to monitor stdin for commands and signal fd for signals.
+    let epoll_fd = epoll_create1(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
+    let mut epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, 0);
+    epoll_ctl(epoll_fd, EpollOp::EpollCtlAdd, 0, &mut epoll_event).unwrap();
+    epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, sfd_u64);
+    epoll_ctl(
+        epoll_fd,
+        EpollOp::EpollCtlAdd,
+        sfd.as_raw_fd(),
+        &mut epoll_event,
+    )
+    .unwrap();
 
     println!("Welcome to my shell");
+    loop {
+        let mut events: [EpollEvent; 2] = [EpollEvent::empty(), EpollEvent::empty()];
+        let num_events = epoll_wait(epoll_fd, &mut events, -1).unwrap();
+        for i in 0..num_events {
+            let fd = events[i].data();
+            println!("Got event on: {}", fd);
+            match fd {
+                0 => {
+                    let mut cmd = String::new();
+                    match io::stdin().read_line(&mut cmd) {
+                        Ok(_) => {
+                            // Remove trailing characters.
+                            cmd = cmd.trim().to_string();
+                            // Blocks if a foreground process is run.
+                            if (!cmd.is_empty()) {
+                                println!("New cmd: {}", cmd);
+                            }
+                        }
 
+                        Err(e) => println!("Error reading cmd: {}", e),
+                    }
+                }
+
+                sfd_u64 => {
+                    match sfd.read_signal() {
+                        // Handle signal.
+                        Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
+                        // No signal occured.
+                        Ok(None) => (),
+                        // Some error happened.
+                        Err(e) => println!("Error reading signal: {}", e),
+                    }
+                }
+            }
+        }
+    }
+
+    /*
     // Loop to process events after periodic sleep.
     let mut wait_for_new_cmd = true;
     loop {
@@ -271,6 +326,7 @@ fn main() -> io::Result<()> {
 
         thread::sleep(Duration::from_secs(1));
     }
+    */
 
     Ok(())
 }
