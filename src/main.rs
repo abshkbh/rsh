@@ -10,6 +10,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::io::{self, Read};
 use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 use std::process;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -159,16 +160,6 @@ impl Shell {
     }
 }
 
-unsafe fn install_signal_handler(signum: Signal, sig_handler: SigHandler) {
-    let mut sigset = SigSet::empty();
-    // Restart syscalls and block signals of the same type if this signal is being processed.
-    let mut sa_flags = SaFlags::empty();
-    sa_flags.insert(SaFlags::SA_RESTART);
-    let sig_action = SigAction::new(sig_handler, sa_flags, SigSet::empty());
-    // This is safe to do as |sig_action| is in the stack initialized before this.
-    sigaction(signum, &sig_action).expect("Failed to install handler for signal");
-}
-
 fn block_signal(sigset: Option<&SigSet>) {
     match sigprocmask(SigmaskHow::SIG_BLOCK, sigset, None) {
         Ok(_) => (),
@@ -181,6 +172,12 @@ fn unblock_signal(sigset: Option<&SigSet>) {
         Ok(_) => (),
         _ => panic!("Failed to block signal"),
     }
+}
+
+fn perform_epoll_op(epfd: RawFd, op: EpollOp, fd: RawFd) {
+    // Event doesn't matter if op maps to EPOLL_CTL_DEL
+    let mut epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, fd as u64);
+    epoll_ctl(epfd, op, fd, &mut epoll_event).unwrap();
 }
 
 fn main() -> io::Result<()> {
@@ -206,21 +203,12 @@ fn main() -> io::Result<()> {
     sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
     sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
     let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
-    let sfd_u64 = sfd.as_raw_fd() as u64;
     println!("Sfd val: {}", sfd.as_raw_fd());
 
     // Create epoll fd to monitor stdin for commands and signal fd for signals.
     let epoll_fd = epoll_create1(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
-    let mut epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, 0);
-    epoll_ctl(epoll_fd, EpollOp::EpollCtlAdd, 0, &mut epoll_event).unwrap();
-    epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, sfd_u64);
-    epoll_ctl(
-        epoll_fd,
-        EpollOp::EpollCtlAdd,
-        sfd.as_raw_fd(),
-        &mut epoll_event,
-    )
-    .unwrap();
+    perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, libc::STDIN_FILENO);
+    perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, sfd.as_raw_fd());
 
     println!("Welcome to my shell");
     loop {
@@ -228,34 +216,48 @@ fn main() -> io::Result<()> {
         let num_events = epoll_wait(epoll_fd, &mut events, -1).unwrap();
         for i in 0..num_events {
             let fd = events[i].data();
-            println!("Got event on: {}", fd);
-            match fd {
-                0 => {
-                    let mut cmd = String::new();
-                    match io::stdin().read_line(&mut cmd) {
-                        Ok(_) => {
-                            // Remove trailing characters.
-                            cmd = cmd.trim().to_string();
-                            // Blocks if a foreground process is run.
-                            if (!cmd.is_empty()) {
-                                println!("New cmd: {}", cmd);
+            let stdin_fd = libc::STDIN_FILENO as u64;
+            let sfd_u64 = sfd.as_raw_fd() as u64;
+            println!("Got event on: {} sfd: {} stdin: {}", fd, sfd_u64, stdin_fd);
+            if (fd == sfd_u64) {
+                println!("In signal handling");
+                match sfd.read_signal() {
+                    // Handle signal.
+                    Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
+                    // No signal occured.
+                    Ok(None) => (),
+                    // Some error happened.
+                    Err(e) => println!("Error reading signal: {}", e),
+                }
+            } else if (fd == stdin_fd) {
+                println!("In cmd handling");
+                let mut cmd = String::new();
+                match io::stdin().read_line(&mut cmd) {
+                    Ok(_) => {
+                        // Remove trailing characters.
+                        cmd = cmd.trim().to_string();
+                        // If a foreground process will be run then remove
+                        // stdin from the monitored fds. This is required
+                        // becasuse the shell should not eat the input for
+                        // the process as well as the shell has to wait
+                        // till the foregorund process finishes.
+                        if (!cmd.is_empty()) {
+                            println!("New cmd: {}", cmd);
+                            if (!cmd.ends_with("&")) {
+                                perform_epoll_op(
+                                    epoll_fd,
+                                    EpollOp::EpollCtlDel,
+                                    libc::STDIN_FILENO,
+                                );
                             }
+                            shell.run_cmd(cmd);
                         }
-
-                        Err(e) => println!("Error reading cmd: {}", e),
                     }
-                }
 
-                sfd_u64 => {
-                    match sfd.read_signal() {
-                        // Handle signal.
-                        Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
-                        // No signal occured.
-                        Ok(None) => (),
-                        // Some error happened.
-                        Err(e) => println!("Error reading signal: {}", e),
-                    }
+                    Err(e) => println!("Error reading cmd: {}", e),
                 }
+            } else {
+                println!("Unknown event on: {}", fd);
             }
         }
     }
