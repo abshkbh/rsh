@@ -63,10 +63,10 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn run_cmd(&mut self, cmd: String) {
+    pub fn run_cmd(&mut self, cmd: String, is_fg: bool) {
         // Process the command.
         if (!Self::maybe_run_in_built_cmd(self, &cmd)) {
-            Self::fork_and_run_cmd(self, cmd);
+            Self::fork_and_run_cmd(self, cmd, is_fg);
         }
     }
 
@@ -89,18 +89,21 @@ impl Shell {
         }
     }
 
-    pub fn fork_and_run_cmd(&mut self, cmd: String) {
-        let bg_process = cmd.ends_with("&");
-        println!("Run new process bg: {}", bg_process);
+    pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) {
         let result = fork();
         match result {
             Ok(ForkResult::Parent { child }) => {
                 println!("In the Parent - Child's pid {}", child);
                 self.fg = Some(child);
+                let job_state = if (is_fg) {
+                    JobState::Foreground
+                } else {
+                    JobState::Background
+                };
                 self.jobs.push(Job {
                     pid: child,
                     cmd_line: cmd,
-                    state: JobState::Foreground,
+                    state: job_state,
                 });
             }
 
@@ -243,14 +246,15 @@ fn main() -> io::Result<()> {
                         // till the foregorund process finishes.
                         if (!cmd.is_empty()) {
                             println!("New cmd: {}", cmd);
-                            if (!cmd.ends_with("&")) {
+                            let is_fg = !cmd.ends_with("&");
+                            if (is_fg) {
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
                                     libc::STDIN_FILENO,
                                 );
                             }
-                            shell.run_cmd(cmd);
+                            shell.run_cmd(cmd, is_fg);
                         }
                     }
 
