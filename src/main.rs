@@ -161,6 +161,13 @@ impl Shell {
             println!("{}", job)
         }
     }
+
+    fn send_signal(&self, sig: Signal) {
+        // Send signal to the foreground process group if it exists.
+        if let Some(pid) = self.fg {
+            kill(Pid::from_raw(-pid.as_raw()), sig);
+        }
+    }
 }
 
 fn block_signal(sigset: Option<&SigSet>) {
@@ -226,7 +233,26 @@ fn main() -> io::Result<()> {
                 println!("In signal handling");
                 match sfd.read_signal() {
                     // Handle signal.
-                    Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
+                    Ok(Some(sig)) => {
+                        println!("Caught signal {}", sig.ssi_signo);
+                        match sig.ssi_signo as i32 {
+                            libc::SIGCHLD => {
+                                println!("Processing SIGCHLD");
+                            }
+
+                            libc::SIGINT => {
+                                println!("Processing SIGINT");
+                                shell.send_signal(Signal::SIGINT);
+                            }
+
+                            libc::SIGTSTP => {
+                                println!("Processing SIGTSTP");
+                                shell.send_signal(Signal::SIGTSTP);
+                            }
+
+                            s => println!("Processing {}", s),
+                        }
+                    }
                     // No signal occured.
                     Ok(None) => (),
                     // Some error happened.
