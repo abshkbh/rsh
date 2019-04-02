@@ -8,6 +8,8 @@ use nix::unistd::*;
 use nix::Error;
 use std::ffi::CString;
 use std::fmt;
+use std::io::Stdout;
+use std::io::Write;
 use std::io::{self, Read};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
@@ -63,11 +65,13 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn run_cmd(&mut self, cmd: String, is_fg: bool) {
+    pub fn run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
         // Process the command.
         if (!Self::maybe_run_in_built_cmd(self, &cmd)) {
-            Self::fork_and_run_cmd(self, cmd, is_fg);
+            return Self::fork_and_run_cmd(self, cmd, is_fg);
         }
+
+        false
     }
 
     pub fn maybe_run_in_built_cmd(&mut self, cmd: &String) -> bool {
@@ -89,7 +93,7 @@ impl Shell {
         }
     }
 
-    pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) {
+    pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
         let result = fork();
         match result {
             Ok(ForkResult::Parent { child }) => {
@@ -119,7 +123,6 @@ impl Shell {
                     Err(e) => {
                         println!("Failed to setpgid error: {}", e);
                         process::exit(-1);
-                        return;
                     }
                     _ => (),
                 }
@@ -136,7 +139,6 @@ impl Shell {
                 } else {
                     println!("No command given");
                     process::exit(-1);
-                    return;
                 };
 
                 // Parse args.
@@ -151,8 +153,13 @@ impl Shell {
                 }
             }
 
-            Err(_) => println!("Fork failed"),
+            Err(_) => {
+                println!("Fork failed");
+                return false;
+            }
         }
+
+        true
     }
 
     fn print_jobs(&self) {
@@ -277,13 +284,19 @@ fn main() -> io::Result<()> {
     perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, sfd.as_raw_fd());
 
     println!("Welcome to my shell");
+    let mut print_prompt = true;
     loop {
+        if (print_prompt) {
+            print!("tsh> ");
+        }
+        io::stdout().flush().unwrap();
         let mut events: [EpollEvent; 2] = [EpollEvent::empty(), EpollEvent::empty()];
         let num_events = epoll_wait(epoll_fd, &mut events, -1).unwrap();
         for i in 0..num_events {
             let fd = events[i].data();
             let stdin_fd = libc::STDIN_FILENO as u64;
             let sfd_u64 = sfd.as_raw_fd() as u64;
+            print_prompt = true;
             println!("Got event on: {} sfd: {} stdin: {}", fd, sfd_u64, stdin_fd);
             if (fd == sfd_u64) {
                 println!("In signal handling");
@@ -347,7 +360,13 @@ fn main() -> io::Result<()> {
                                     libc::STDIN_FILENO,
                                 );
                             }
-                            shell.run_cmd(cmd, is_fg);
+
+                            // Only print the shell prompt if the fork was
+                            // successful and the process was a non-foreground
+                            // process.
+                            if (shell.run_cmd(cmd, is_fg)) {
+                                print_prompt = !is_fg;
+                            }
                         }
                     }
 
