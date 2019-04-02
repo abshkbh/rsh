@@ -1,23 +1,16 @@
-#![allow(unused)]
 use nix::sys::epoll::*;
 use nix::sys::signal::*;
 use nix::sys::signalfd::SignalFd;
 use nix::sys::signalfd::*;
 use nix::sys::wait::*;
 use nix::unistd::*;
-use nix::Error;
 use std::ffi::CString;
 use std::fmt;
-use std::io::Stdout;
+use std::io;
 use std::io::Write;
-use std::io::{self, Read};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::process;
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
 
 pub enum InBuiltCmd {
     Quit,
@@ -67,7 +60,7 @@ pub struct Shell {
 impl Shell {
     pub fn run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
         // Process the command.
-        if (!Self::maybe_run_in_built_cmd(self, &cmd)) {
+        if !Self::maybe_run_in_built_cmd(self, &cmd) {
             return Self::fork_and_run_cmd(self, cmd, is_fg);
         }
 
@@ -79,13 +72,14 @@ impl Shell {
             "quit" => {
                 println!("quit");
                 process::exit(0);
-                true
             }
+
             "jobs" => {
                 println!("jobs");
                 self.print_jobs();
                 true
             }
+
             _ => {
                 println!("Need to run {}", cmd);
                 false
@@ -99,7 +93,7 @@ impl Shell {
             Ok(ForkResult::Parent { child }) => {
                 println!("In the Parent - Child's pid {}", child);
                 self.fg = Some(child);
-                let job_state = if (is_fg) {
+                let job_state = if is_fg {
                     JobState::Foreground
                 } else {
                     JobState::Background
@@ -142,7 +136,7 @@ impl Shell {
                 };
 
                 // Parse args.
-                let mut args: [CString; 0] = [];
+                let args: [CString; 0] = [];
                 match nix::unistd::execvp(&filename, &args) {
                     Err(e) => {
                         // Exit the forked process if exec-ing command has failed.
@@ -172,7 +166,7 @@ impl Shell {
     fn send_signal(&self, sig: Signal) {
         // Send signal to the foreground process group if it exists.
         if let Some(pid) = self.fg {
-            kill(Pid::from_raw(-pid.as_raw()), sig);
+            kill(Pid::from_raw(-pid.as_raw()), sig).unwrap();
         }
     }
 
@@ -183,11 +177,20 @@ impl Shell {
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
             result = self.wait_for_children(Some(pid));
+<<<<<<< HEAD
             if (result) {
+=======
+            if result {
+>>>>>>> Implemented message for stopped process
                 self.fg = None;
             }
         }
 
+<<<<<<< HEAD
+=======
+        // TODO: Fg process stopped will still be counted in wait here. May be
+        // okay.
+>>>>>>> Implemented message for stopped process
         self.wait_for_children(None);
         result
     }
@@ -284,17 +287,15 @@ fn main() -> io::Result<()> {
     sfd_flags.set(SfdFlags::SFD_NONBLOCK, true);
     sfd_flags.set(SfdFlags::SFD_CLOEXEC, true);
     let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
-    println!("Sfd val: {}", sfd.as_raw_fd());
 
     // Create epoll fd to monitor stdin for commands and signal fd for signals.
     let epoll_fd = epoll_create1(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
     perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, libc::STDIN_FILENO);
     perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, sfd.as_raw_fd());
 
-    println!("Welcome to my shell");
     let mut print_prompt = true;
     loop {
-        if (print_prompt) {
+        if print_prompt {
             print!("tsh> ");
         }
         io::stdout().flush().unwrap();
@@ -305,20 +306,18 @@ fn main() -> io::Result<()> {
             let stdin_fd = libc::STDIN_FILENO as u64;
             let sfd_u64 = sfd.as_raw_fd() as u64;
             print_prompt = true;
-            println!("Got event on: {} sfd: {} stdin: {}", fd, sfd_u64, stdin_fd);
-            if (fd == sfd_u64) {
+            if fd == sfd_u64 {
                 println!("In signal handling");
                 match sfd.read_signal() {
                     // Handle signal.
                     Ok(Some(sig)) => {
-                        println!("Caught signal {}", sig.ssi_signo);
                         match sig.ssi_signo as i32 {
                             libc::SIGCHLD => {
                                 println!("Processing SIGCHLD");
                                 // If foreground process is stopped or killed /
                                 // exited then listen again to stdin for the
                                 // next command.
-                                if (shell.reap_children()) {
+                                if shell.reap_children() {
                                     println!("Reaped foreground process");
                                     perform_epoll_op(
                                         epoll_fd,
@@ -346,7 +345,7 @@ fn main() -> io::Result<()> {
                     // Some error happened.
                     Err(e) => println!("Error reading signal: {}", e),
                 }
-            } else if (fd == stdin_fd) {
+            } else if fd == stdin_fd {
                 println!("In cmd handling");
                 let mut cmd = String::new();
                 match io::stdin().read_line(&mut cmd) {
@@ -358,10 +357,10 @@ fn main() -> io::Result<()> {
                         // becasuse the shell should not eat the input for
                         // the process as well as the shell has to wait
                         // till the foregorund process finishes.
-                        if (!cmd.is_empty()) {
+                        if !cmd.is_empty() {
                             println!("New cmd: {}", cmd);
                             let is_fg = !cmd.ends_with("&");
-                            if (is_fg) {
+                            if is_fg {
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
@@ -372,7 +371,7 @@ fn main() -> io::Result<()> {
                             // Only print the shell prompt if the fork was
                             // successful and the process was a non-foreground
                             // process.
-                            if (shell.run_cmd(cmd, is_fg)) {
+                            if shell.run_cmd(cmd, is_fg) {
                                 print_prompt = !is_fg;
                             }
                         }
@@ -385,6 +384,4 @@ fn main() -> io::Result<()> {
             }
         }
     }
-
-    Ok(())
 }
