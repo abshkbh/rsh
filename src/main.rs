@@ -182,17 +182,17 @@ impl Shell {
         let mut result = false;
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
-            result = Shell::wait_for_children(Some(pid));
+            result = self.wait_for_children(Some(pid));
             if (result) {
                 self.fg = None;
             }
         }
 
-        Shell::wait_for_children(None);
+        self.wait_for_children(None);
         result
     }
 
-    fn wait_for_children(pid: Option<Pid>) -> bool {
+    fn wait_for_children(&mut self, pid: Option<Pid>) -> bool {
         let mut result = false;
         let mut flags = WaitPidFlag::empty();
         flags.set(WaitPidFlag::WNOHANG, true);
@@ -206,7 +206,11 @@ impl Shell {
 
                 WaitStatus::Stopped(pid, signal) => {
                     result = true;
-                    println!("{} stopped due to signal {}", pid, signal)
+                    let job_id = self.pid_to_jid(pid);
+                    if let Some(jid) = job_id {
+                        println!("Job [{}] ({}) stopped by signal {}", jid, pid, signal);
+                        self.jobs[jid].state = JobState::Stopped;
+                    }
                 }
 
                 WaitStatus::Signaled(pid, signal, is_coredump) => {
@@ -230,6 +234,10 @@ impl Shell {
         }
 
         result
+    }
+
+    fn pid_to_jid(&self, pid: Pid) -> Option<usize> {
+        self.jobs.iter().position(|job| (*job).pid == pid)
     }
 }
 
