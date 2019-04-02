@@ -73,13 +73,11 @@ impl Shell {
                 println!("quit");
                 process::exit(0);
             }
-
             "jobs" => {
                 println!("jobs");
                 self.print_jobs();
                 true
             }
-
             _ => {
                 println!("Need to run {}", cmd);
                 false
@@ -177,20 +175,11 @@ impl Shell {
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
             result = self.wait_for_children(Some(pid));
-<<<<<<< HEAD
-            if (result) {
-=======
             if result {
->>>>>>> Implemented message for stopped process
                 self.fg = None;
             }
         }
 
-<<<<<<< HEAD
-=======
-        // TODO: Fg process stopped will still be counted in wait here. May be
-        // okay.
->>>>>>> Implemented message for stopped process
         self.wait_for_children(None);
         result
     }
