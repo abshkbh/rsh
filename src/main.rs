@@ -168,6 +168,62 @@ impl Shell {
             kill(Pid::from_raw(-pid.as_raw()), sig);
         }
     }
+
+    // Reaps children that are ready for reaping. Returns true iff foreground
+    // process is reaped.
+    fn reap_children(&mut self) -> bool {
+        let mut result = false;
+        // First reap foreground process and then all other children.
+        if let Some(pid) = self.fg {
+            result = Shell::wait_for_children(Some(pid));
+            if (result) {
+                self.fg = None;
+            }
+        }
+
+        Shell::wait_for_children(None);
+        result
+    }
+
+    fn wait_for_children(pid: Option<Pid>) -> bool {
+        let mut result = false;
+        let mut flags = WaitPidFlag::empty();
+        flags.set(WaitPidFlag::WNOHANG, true);
+        flags.set(WaitPidFlag::WUNTRACED, true);
+        match waitpid(pid, Some(flags)) {
+            Ok(t) => match t {
+                WaitStatus::Exited(pid, status) => {
+                    result = true;
+                    println!("{} exited with {}", pid, status);
+                }
+
+                WaitStatus::Stopped(pid, signal) => {
+                    result = true;
+                    println!("{} stopped due to signal {}", pid, signal)
+                }
+
+                WaitStatus::Signaled(pid, signal, is_coredump) => {
+                    result = true;
+                    println!(
+                        "{} signaled due to signal {} coredumped {}",
+                        pid, signal, is_coredump
+                    );
+                }
+
+                // TODO: Handle this case.
+                WaitStatus::Continued(pid) => println!("{} continued", pid),
+
+                WaitStatus::StillAlive => {
+                    println!("Children still alive");
+                }
+                _ => println!("Ptrace event"),
+            },
+
+            Err(e) => println!("Wait error {}", e),
+        }
+
+        result
+    }
 }
 
 fn block_signal(sigset: Option<&SigSet>) {
@@ -238,6 +294,17 @@ fn main() -> io::Result<()> {
                         match sig.ssi_signo as i32 {
                             libc::SIGCHLD => {
                                 println!("Processing SIGCHLD");
+                                // If foreground process is stopped or killed /
+                                // exited then listen again to stdin for the
+                                // next command.
+                                if (shell.reap_children()) {
+                                    println!("Reaped foreground process");
+                                    perform_epoll_op(
+                                        epoll_fd,
+                                        EpollOp::EpollCtlAdd,
+                                        libc::STDIN_FILENO,
+                                    );
+                                }
                             }
 
                             libc::SIGINT => {
@@ -291,74 +358,6 @@ fn main() -> io::Result<()> {
             }
         }
     }
-
-    /*
-    // Loop to process events after periodic sleep.
-    let mut wait_for_new_cmd = true;
-    loop {
-        if wait_for_new_cmd {
-            let mut cmd = String::new();
-            match io::stdin().read_line(&mut cmd) {
-                Ok(_) => {
-                    // Remove trailing characters.
-                    cmd = cmd.trim().to_string();
-                    // Blocks if a foreground process is run.
-                    if (!cmd.is_empty()) {
-                        println!("New cmd: {}", cmd);
-                        shell.run_cmd(cmd);
-                    }
-                }
-
-                Err(error) => println!("Error reading cmd"),
-            }
-        }
-
-        println!("Waiting to reap children");
-        let mut flags = WaitPidFlag::empty();
-        flags.set(WaitPidFlag::WNOHANG, true);
-        flags.set(WaitPidFlag::WUNTRACED, true);
-        match waitpid(None, Some(flags)) {
-            Ok(t) => match t {
-                WaitStatus::Exited(pid, status) => {
-                    wait_for_new_cmd = true;
-                    println!("{} exited with {}", pid, status);
-                }
-                WaitStatus::Stopped(pid, signal) => {
-                    wait_for_new_cmd = true;
-                    println!("{} stopped due to signal {}", pid, signal)
-                }
-                WaitStatus::Signaled(pid, signal, is_coredump) => {
-                    wait_for_new_cmd = true;
-                    println!(
-                        "{} signaled due to signal {} coredumped {}",
-                        pid, signal, is_coredump
-                    );
-                }
-                WaitStatus::Continued(pid) => println!("{} continued", pid),
-                WaitStatus::StillAlive => {
-                    wait_for_new_cmd = false;
-                    println!("Children still alive");
-                }
-                _ => println!("Ptrace event"),
-            },
-
-            Err(e) => println!("Wait error {}", e),
-        }
-
-        println!("Waiting for signals");
-        // Check and process signals in a non-blocking way.
-        match sfd.read_signal() {
-            // Handle signal.
-            Ok(Some(sig)) => println!("Caught signal {}", sig.ssi_signo),
-            // No signal occured.
-            Ok(None) => (),
-            // Some error happened.
-            Err(_) => (),
-        }
-
-        thread::sleep(Duration::from_secs(1));
-    }
-    */
 
     Ok(())
 }
