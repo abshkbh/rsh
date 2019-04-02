@@ -20,6 +20,7 @@ pub enum InBuiltCmd {
     Kill(i32),
 }
 
+#[derive(PartialEq)]
 enum JobState {
     Foreground,
     Background,
@@ -58,21 +59,52 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn run_in_built_cmd(&mut self, cmd: &str) -> bool {
-        match cmd {
-            "quit" => {
-                println!("quit");
-                process::exit(0);
+    pub fn run_in_built_cmd(&mut self, cmd: &str) {
+        if cmd.starts_with("quit") {
+            println!("quit");
+            process::exit(0);
+        } else if cmd.starts_with("jobs") {
+            println!("jobs");
+            self.print_jobs();
+        } else if cmd.starts_with("bg") {
+            println!("bg");
+            let args: Vec<&str> = cmd.split_whitespace().collect();
+            // Do nothing if exact number of args aren't provided to "bg".
+            if args.len() != 2 {
+                println!("Args len mismatch {}", args.len());
+                return;
             }
-            "jobs" => {
-                println!("jobs");
-                self.print_jobs();
-                true
+
+            // Extract job id from args and send it a SIGCONT.
+            if args[1].starts_with("%") {
+                // TODO: Handle unwrap here.
+                let mut j_id =
+                    i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap() as usize;
+
+                if j_id == 0 {
+                    return;
+                }
+
+                j_id = j_id - 1;
+                if j_id < self.jobs.len() {
+                    println!("Job {} Pid {} sent SIGCONT", j_id, self.jobs[j_id].pid);
+                    kill(
+                        Pid::from_raw(-self.jobs[j_id].pid.as_raw()),
+                        signal::SIGCONT,
+                    )
+                    .unwrap();
+                }
+            } else {
+                let pid = i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap();
+                if let Some(j_id) = self.pid_to_jid(Pid::from_raw(pid)) {
+                    if j_id < self.jobs.len() {
+                        println!("Job {} Pid {} sent SIGCONT", j_id, pid);
+                        kill(Pid::from_raw(-pid), signal::SIGCONT).unwrap();
+                    }
+                }
             }
-            _ => {
-                println!("Need to run {}", cmd);
-                false
-            }
+        } else if cmd.starts_with("fg") {
+            println!("fg");
         }
     }
 
@@ -165,12 +197,14 @@ impl Shell {
         let mut result = false;
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
+            println!("Wait for foreground process");
             result = self.wait_for_children(Some(pid));
             if result {
                 self.fg = None;
             }
         }
 
+        println!("Wait for remaining processes");
         self.wait_for_children(None);
         result
     }
@@ -180,6 +214,7 @@ impl Shell {
         let mut flags = WaitPidFlag::empty();
         flags.set(WaitPidFlag::WNOHANG, true);
         flags.set(WaitPidFlag::WUNTRACED, true);
+        flags.set(WaitPidFlag::WCONTINUED, true);
         match waitpid(pid, Some(flags)) {
             Ok(t) => match t {
                 // Reap process and remove it from internal list of jobs.
@@ -200,18 +235,31 @@ impl Shell {
                 }
 
                 // Reap process and remove it from internal list of jobs.
-                // TODO: Should this only be guarded on signal == SIGKILL.
                 WaitStatus::Signaled(pid, signal, is_coredump) => {
-                    result = true;
                     println!(
                         "{} signaled due to signal {} coredumped {}",
                         pid, signal, is_coredump
                     );
-                    self.remove_pid_from_jobs(pid);
+                    let jid = self.pid_to_jid(pid);
+                    if let Some(job_id) = jid {
+                        if signal == Signal::SIGKILL {
+                            println!("Removing {} due to SIGKILL", job_id);
+                            // If foreground process was killed result is true.
+                            result = self.jobs[job_id].state == JobState::Foreground;
+                            self.remove_pid_from_jobs(pid);
+                        }
+                    }
                 }
 
                 // TODO: Handle this case.
-                WaitStatus::Continued(pid) => println!("{} continued", pid),
+                WaitStatus::Continued(pid) => {
+                    println!("{} continued", pid);
+                    let jid = self.pid_to_jid(pid);
+                    if let Some(job_id) = jid {
+                        println!("Moving {} due to background", job_id);
+                        self.jobs[job_id].state = JobState::Background;
+                    }
+                }
 
                 WaitStatus::StillAlive => {
                     println!("Children still alive");
@@ -230,10 +278,14 @@ impl Shell {
     }
 
     fn is_inbuilt_cmd(cmd: &str) -> bool {
-        match cmd {
-            "jobs" | "quit" | "bg" | "fg" => true,
-            _ => false,
+        if cmd.starts_with("jobs")
+            || cmd.starts_with("fg")
+            || cmd.starts_with("bg")
+            || cmd.starts_with("quit")
+        {
+            return true;
         }
+        false
     }
 
     fn remove_pid_from_jobs(&mut self, pid: Pid) {
