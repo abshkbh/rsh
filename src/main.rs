@@ -191,11 +191,14 @@ impl Shell {
         flags.set(WaitPidFlag::WUNTRACED, true);
         match waitpid(pid, Some(flags)) {
             Ok(t) => match t {
+                // Reap process and remove it from internal list of jobs.
                 WaitStatus::Exited(pid, status) => {
                     result = true;
                     println!("{} exited with {}", pid, status);
+                    self.remove_pid_from_jobs(pid);
                 }
 
+                // Change state of the job to stopped.
                 WaitStatus::Stopped(pid, signal) => {
                     result = true;
                     let job_id = self.pid_to_jid(pid);
@@ -205,12 +208,15 @@ impl Shell {
                     }
                 }
 
+                // Reap process and remove it from internal list of jobs.
+                // TODO: Should this only be guarded on signal == SIGKILL.
                 WaitStatus::Signaled(pid, signal, is_coredump) => {
                     result = true;
                     println!(
                         "{} signaled due to signal {} coredumped {}",
                         pid, signal, is_coredump
                     );
+                    self.remove_pid_from_jobs(pid);
                 }
 
                 // TODO: Handle this case.
@@ -230,6 +236,22 @@ impl Shell {
 
     fn pid_to_jid(&self, pid: Pid) -> Option<usize> {
         self.jobs.iter().position(|job| (*job).pid == pid)
+    }
+
+    fn is_inbuilt_cmd(cmd: &str) -> bool {
+        match cmd {
+            "jobs" | "quit" | "bg" | "fg" => true,
+            _ => false,
+        }
+    }
+
+    fn remove_pid_from_jobs(&mut self, pid: Pid) {
+        let job_id = self.pid_to_jid(pid);
+        if let Some(jid) = job_id {
+            self.jobs.remove(jid);
+        } else {
+            println!("Can't find {} in jobs list", pid);
+        }
     }
 }
 
@@ -349,7 +371,7 @@ fn main() -> io::Result<()> {
                         if !cmd.is_empty() {
                             println!("New cmd: {}", cmd);
                             let is_fg = !cmd.ends_with("&");
-                            if is_fg {
+                            if is_fg && !Shell::is_inbuilt_cmd(&cmd) {
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
