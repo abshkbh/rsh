@@ -58,17 +58,8 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
-        // Process the command.
-        if !Self::maybe_run_in_built_cmd(self, &cmd) {
-            return Self::fork_and_run_cmd(self, cmd, is_fg);
-        }
-
-        false
-    }
-
-    pub fn maybe_run_in_built_cmd(&mut self, cmd: &String) -> bool {
-        match cmd.as_ref() {
+    pub fn run_in_built_cmd(&mut self, cmd: &str) -> bool {
+        match cmd {
             "quit" => {
                 println!("quit");
                 process::exit(0);
@@ -371,7 +362,8 @@ fn main() -> io::Result<()> {
                         if !cmd.is_empty() {
                             println!("New cmd: {}", cmd);
                             let is_fg = !cmd.ends_with("&");
-                            if is_fg && !Shell::is_inbuilt_cmd(&cmd) {
+                            let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
+                            if is_fg && !is_inbuilt_cmd {
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
@@ -379,11 +371,15 @@ fn main() -> io::Result<()> {
                                 );
                             }
 
-                            // Only print the shell prompt if the fork was
-                            // successful and the process was a non-foreground
-                            // process.
-                            if shell.run_cmd(cmd, is_fg) {
-                                print_prompt = !is_fg;
+                            if is_inbuilt_cmd {
+                                shell.run_in_built_cmd(&cmd);
+                            } else {
+                                // Only print the shell prompt if the fork was
+                                // successful and the process was a non-foreground
+                                // process.
+                                if shell.fork_and_run_cmd(cmd, is_fg) {
+                                    print_prompt = !is_fg;
+                                }
                             }
                         }
                     }
