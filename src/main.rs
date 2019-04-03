@@ -67,7 +67,9 @@ impl Shell {
             // Tell all jobs that the controlling terminal is dying before
             // exiting. The shell would exit after processes are reaped in
             // |reap_children|.
-            self.send_signal_to_all_jobs(Signal::SIGKILL);
+            self.jobs
+                .iter()
+                .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
             self.quit_initiated = true;
         } else if cmd.starts_with("jobs") {
             println!("jobs");
@@ -194,12 +196,6 @@ impl Shell {
         // Send signal to the foreground process group if it exists.
         if let Some(pid) = self.fg {
             kill(Pid::from_raw(-pid.as_raw()), sig).unwrap();
-        }
-    }
-
-    fn send_signal_to_all_jobs(&self, sig: Signal) {
-        for job in &self.jobs {
-            kill(Pid::from_raw(-job.pid.as_raw()), sig).unwrap();
         }
     }
 
