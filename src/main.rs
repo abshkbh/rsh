@@ -56,13 +56,19 @@ pub struct Shell {
     fg: Option<Pid>,
 
     jobs: Vec<Job>,
+
+    quit_initiated: bool,
 }
 
 impl Shell {
     pub fn run_in_built_cmd(&mut self, cmd: &str) {
         if cmd.starts_with("quit") {
             println!("quit");
-            process::exit(0);
+            // Tell all jobs that the controlling terminal is dying before
+            // exiting. The shell would exit after processes are reaped in
+            // |reap_children|.
+            self.send_signal_to_all_jobs(Signal::SIGKILL);
+            self.quit_initiated = true;
         } else if cmd.starts_with("jobs") {
             println!("jobs");
             self.print_jobs();
@@ -184,10 +190,16 @@ impl Shell {
         }
     }
 
-    fn send_signal(&self, sig: Signal) {
+    fn send_signal_to_fg(&self, sig: Signal) {
         // Send signal to the foreground process group if it exists.
         if let Some(pid) = self.fg {
             kill(Pid::from_raw(-pid.as_raw()), sig).unwrap();
+        }
+    }
+
+    fn send_signal_to_all_jobs(&self, sig: Signal) {
+        for job in &self.jobs {
+            kill(Pid::from_raw(-job.pid.as_raw()), sig).unwrap();
         }
     }
 
@@ -204,8 +216,15 @@ impl Shell {
             }
         }
 
+        // TODO: Iterate and wait for all remaining processes.
         println!("Wait for remaining processes");
         self.wait_for_children(None);
+
+        // If this is a reap after a "quit" was issued then exit the terminal.
+        if self.quit_initiated {
+            process::exit(0);
+        }
+
         result
     }
 
@@ -243,7 +262,7 @@ impl Shell {
                     let jid = self.pid_to_jid(pid);
                     if let Some(job_id) = jid {
                         if signal == Signal::SIGKILL {
-                            println!("Removing {} due to SIGKILL", job_id);
+                            println!("Removing {} {} due to SIGKILL", job_id, pid);
                             // If foreground process was killed result is true.
                             result = self.jobs[job_id].state == JobState::Foreground;
                             self.remove_pid_from_jobs(pid);
@@ -322,6 +341,7 @@ fn main() -> io::Result<()> {
     let mut shell = Shell {
         fg: None,
         jobs: vec![],
+        quit_initiated: false,
     };
 
     // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
@@ -383,12 +403,12 @@ fn main() -> io::Result<()> {
 
                             libc::SIGINT => {
                                 println!("Processing SIGINT");
-                                shell.send_signal(Signal::SIGINT);
+                                shell.send_signal_to_fg(Signal::SIGINT);
                             }
 
                             libc::SIGTSTP => {
                                 println!("Processing SIGTSTP");
-                                shell.send_signal(Signal::SIGTSTP);
+                                shell.send_signal_to_fg(Signal::SIGTSTP);
                             }
 
                             s => println!("Processing {}", s),
