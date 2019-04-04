@@ -11,6 +11,9 @@ use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::process;
+#[macro_use]
+extern crate log;
+extern crate env_logger;
 
 pub enum InBuiltCmd {
     Quit,
@@ -61,9 +64,17 @@ pub struct Shell {
 }
 
 impl Shell {
+    pub fn new() -> Shell {
+        Shell {
+            fg: None,
+            jobs: vec![],
+            quit_initiated: false,
+        }
+    }
+
     pub fn run_in_built_cmd(&mut self, cmd: &str) {
         if cmd.starts_with("quit") {
-            println!("quit");
+            debug!("quit");
             // If no jobs exist then exit immediately.
             if self.jobs.is_empty() {
                 process::exit(0);
@@ -76,14 +87,14 @@ impl Shell {
                 .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
             self.quit_initiated = true;
         } else if cmd.starts_with("jobs") {
-            println!("jobs");
+            debug!("jobs");
             self.print_jobs();
         } else if cmd.starts_with("bg") {
-            println!("bg");
+            debug!("bg");
             let args: Vec<&str> = cmd.split_whitespace().collect();
             // Do nothing if exact number of args aren't provided to "bg".
             if args.len() != 2 {
-                println!("Args len mismatch {}", args.len());
+                debug!("Args len mismatch {}", args.len());
                 return;
             }
 
@@ -99,7 +110,7 @@ impl Shell {
 
                 j_id = j_id - 1;
                 if j_id < self.jobs.len() {
-                    println!("Job {} Pid {} sent SIGCONT", j_id, self.jobs[j_id].pid);
+                    debug!("Job {} Pid {} sent SIGCONT", j_id, self.jobs[j_id].pid);
                     kill(
                         Pid::from_raw(-self.jobs[j_id].pid.as_raw()),
                         signal::SIGCONT,
@@ -110,13 +121,13 @@ impl Shell {
                 let pid = i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap();
                 if let Some(j_id) = self.pid_to_jid(Pid::from_raw(pid)) {
                     if j_id < self.jobs.len() {
-                        println!("Job {} Pid {} sent SIGCONT", j_id, pid);
+                        debug!("Job {} Pid {} sent SIGCONT", j_id, pid);
                         kill(Pid::from_raw(-pid), signal::SIGCONT).unwrap();
                     }
                 }
             }
         } else if cmd.starts_with("fg") {
-            println!("fg");
+            debug!("fg");
         }
     }
 
@@ -124,7 +135,7 @@ impl Shell {
         let result = fork();
         match result {
             Ok(ForkResult::Parent { child }) => {
-                println!("In the Parent - Child's pid {}", child);
+                debug!("In the Parent - Child's pid {}", child);
                 self.fg = Some(child);
                 let job_state = if is_fg {
                     JobState::Foreground
@@ -139,7 +150,7 @@ impl Shell {
             }
 
             Ok(ForkResult::Child) => {
-                println!("In the child {}", cmd);
+                debug!("In the child {}", cmd);
 
                 // Set new process group for the child. The gid will be the pid
                 // of the new process.
@@ -148,7 +159,7 @@ impl Shell {
                     nix::unistd::Pid::from_raw(0),
                 ) {
                     Err(e) => {
-                        println!("Failed to setpgid error: {}", e);
+                        debug!("Failed to setpgid error: {}", e);
                         process::exit(-1);
                     }
                     _ => (),
@@ -164,7 +175,7 @@ impl Shell {
                 let filename = if let Ok(filename) = CString::new(cmd) {
                     filename
                 } else {
-                    println!("No command given");
+                    debug!("No command given");
                     process::exit(-1);
                 };
 
@@ -173,7 +184,7 @@ impl Shell {
                 match nix::unistd::execvp(&filename, &args) {
                     Err(e) => {
                         // Exit the forked process if exec-ing command has failed.
-                        println!("Failed to exec {}", e);
+                        debug!("Failed to exec {}", e);
                         process::exit(-1);
                     }
                     _ => (),
@@ -181,7 +192,7 @@ impl Shell {
             }
 
             Err(_) => {
-                println!("Fork failed");
+                debug!("Fork failed");
                 return false;
             }
         }
@@ -190,7 +201,7 @@ impl Shell {
     }
 
     fn print_jobs(&self) {
-        println!("Jobs");
+        debug!("Jobs");
         for job in &self.jobs {
             println!("{}", job)
         }
@@ -209,14 +220,14 @@ impl Shell {
         let mut result = false;
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
-            println!("Wait for foreground process");
+            debug!("Wait for foreground process");
             result = self.wait_for_child(pid);
             if result {
                 self.fg = None;
             }
         }
 
-        println!("Wait for remaining processes");
+        debug!("Wait for remaining processes");
         let job_pids: Vec<Pid> = self.jobs.iter().map(|job| job.pid).collect();
         for pid in job_pids {
             self.wait_for_child(pid);
@@ -241,7 +252,7 @@ impl Shell {
                 // Reap process and remove it from internal list of jobs.
                 WaitStatus::Exited(pid, status) => {
                     result = true;
-                    println!("{} exited with {}", pid, status);
+                    debug!("{} exited with {}", pid, status);
                     self.remove_pid_from_jobs(pid);
                 }
 
@@ -257,13 +268,13 @@ impl Shell {
 
                 // Reap process and remove it from internal list of jobs.
                 WaitStatus::Signaled(pid, signal, is_coredump) => {
-                    println!(
+                    debug!(
                         "{} signaled due to signal {} coredumped {}",
                         pid, signal, is_coredump
                     );
                     let jid = self.pid_to_jid(pid);
                     if let Some(job_id) = jid {
-                        println!("Removing {} {}", job_id, pid);
+                        debug!("Removing {} {}", job_id, pid);
                         // If foreground process was killed result is true.
                         result = self.jobs[job_id].state == JobState::Foreground;
                         self.remove_pid_from_jobs(pid);
@@ -272,21 +283,21 @@ impl Shell {
 
                 // TODO: Handle this case.
                 WaitStatus::Continued(pid) => {
-                    println!("{} continued", pid);
+                    debug!("{} continued", pid);
                     let jid = self.pid_to_jid(pid);
                     if let Some(job_id) = jid {
-                        println!("Moving {} due to background", job_id);
+                        debug!("Moving {} due to background", job_id);
                         self.jobs[job_id].state = JobState::Background;
                     }
                 }
 
                 WaitStatus::StillAlive => {
-                    println!("Children still alive");
+                    debug!("Children still alive");
                 }
-                _ => println!("Ptrace event"),
+                _ => debug!("Ptrace event"),
             },
 
-            Err(e) => println!("Wait error {}", e),
+            Err(e) => debug!("Wait error {}", e),
         }
 
         result
@@ -312,7 +323,7 @@ impl Shell {
         if let Some(jid) = job_id {
             self.jobs.remove(jid);
         } else {
-            println!("Can't find {} in jobs list", pid);
+            debug!("Can't find {} in jobs list", pid);
         }
     }
 }
@@ -338,11 +349,9 @@ fn perform_epoll_op(epfd: RawFd, op: EpollOp, fd: RawFd) {
 }
 
 fn main() -> io::Result<()> {
-    let mut shell = Shell {
-        fg: None,
-        jobs: vec![],
-        quit_initiated: false,
-    };
+    env_logger::init();
+
+    let mut shell = Shell::new();
 
     // Set up signal fd to listen to SIGINT, SIGCHLD and SIGTSTP. This is done
     // so that these signals can be handled on the main thread in a race free
@@ -370,8 +379,10 @@ fn main() -> io::Result<()> {
     let mut print_prompt = true;
     loop {
         if print_prompt {
+            println!();
             print!("tsh> ");
         }
+
         io::stdout().flush().unwrap();
         let mut events: [EpollEvent; 2] = [EpollEvent::empty(), EpollEvent::empty()];
         let num_events = epoll_wait(epoll_fd, &mut events, -1).unwrap();
@@ -381,18 +392,19 @@ fn main() -> io::Result<()> {
             let sfd_u64 = sfd.as_raw_fd() as u64;
             print_prompt = true;
             if fd == sfd_u64 {
-                println!("In signal handling");
+                debug!("In signal handling");
                 match sfd.read_signal() {
                     // Handle signal.
                     Ok(Some(sig)) => {
                         match sig.ssi_signo as i32 {
                             libc::SIGCHLD => {
-                                println!("Processing SIGCHLD");
+                                print_prompt = false;
+                                debug!("Processing SIGCHLD");
                                 // If foreground process is stopped or killed /
                                 // exited then listen again to stdin for the
                                 // next command.
                                 if shell.reap_children() {
-                                    println!("Reaped foreground process");
+                                    debug!("Reaped foreground process");
                                     perform_epoll_op(
                                         epoll_fd,
                                         EpollOp::EpollCtlAdd,
@@ -402,25 +414,25 @@ fn main() -> io::Result<()> {
                             }
 
                             libc::SIGINT => {
-                                println!("Processing SIGINT");
+                                debug!("Processing SIGINT");
                                 shell.send_signal_to_fg(Signal::SIGINT);
                             }
 
                             libc::SIGTSTP => {
-                                println!("Processing SIGTSTP");
+                                debug!("Processing SIGTSTP");
                                 shell.send_signal_to_fg(Signal::SIGTSTP);
                             }
 
-                            s => println!("Processing {}", s),
+                            s => debug!("Processing {}", s),
                         }
                     }
                     // No signal occured.
                     Ok(None) => (),
                     // Some error happened.
-                    Err(e) => println!("Error reading signal: {}", e),
+                    Err(e) => debug!("Error reading signal: {}", e),
                 }
             } else if fd == stdin_fd {
-                println!("In cmd handling");
+                debug!("In cmd handling");
                 let mut cmd = String::new();
                 match io::stdin().read_line(&mut cmd) {
                     Ok(_) => {
@@ -432,7 +444,7 @@ fn main() -> io::Result<()> {
                         // the process as well as the shell has to wait
                         // till the foregorund process finishes.
                         if !cmd.is_empty() {
-                            println!("New cmd: {}", cmd);
+                            debug!("New cmd: {}", cmd);
                             let is_fg = !cmd.ends_with("&");
                             let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
                             if is_fg && !is_inbuilt_cmd {
@@ -456,10 +468,10 @@ fn main() -> io::Result<()> {
                         }
                     }
 
-                    Err(e) => println!("Error reading cmd: {}", e),
+                    Err(e) => debug!("Error reading cmd: {}", e),
                 }
             } else {
-                println!("Unknown event on: {}", fd);
+                debug!("Unknown event on: {}", fd);
             }
         }
     }
