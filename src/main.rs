@@ -64,9 +64,13 @@ impl Shell {
     pub fn run_in_built_cmd(&mut self, cmd: &str) {
         if cmd.starts_with("quit") {
             println!("quit");
-            // Tell all jobs that the controlling terminal is dying before
-            // exiting. The shell would exit after processes are reaped in
-            // |reap_children|.
+            // If no jobs exist then exit immediately.
+            if self.jobs.is_empty() {
+                process::exit(0);
+            }
+
+            // If jobs exist then kill all children processes. The shell would
+            // exit after processes are reaped in |reap_children|.
             self.jobs
                 .iter()
                 .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
@@ -206,15 +210,17 @@ impl Shell {
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
             println!("Wait for foreground process");
-            result = self.wait_for_children(Some(pid));
+            result = self.wait_for_child(pid);
             if result {
                 self.fg = None;
             }
         }
 
-        // TODO: Iterate and wait for all remaining processes.
         println!("Wait for remaining processes");
-        self.wait_for_children(None);
+        let job_pids: Vec<Pid> = self.jobs.iter().map(|job| job.pid).collect();
+        for pid in job_pids {
+            self.wait_for_child(pid);
+        }
 
         // If this is a reap after a "quit" was issued then exit the terminal.
         if self.quit_initiated {
@@ -224,13 +230,13 @@ impl Shell {
         result
     }
 
-    fn wait_for_children(&mut self, pid: Option<Pid>) -> bool {
+    fn wait_for_child(&mut self, pid: Pid) -> bool {
         let mut result = false;
         let mut flags = WaitPidFlag::empty();
         flags.set(WaitPidFlag::WNOHANG, true);
         flags.set(WaitPidFlag::WUNTRACED, true);
         flags.set(WaitPidFlag::WCONTINUED, true);
-        match waitpid(pid, Some(flags)) {
+        match waitpid(Some(pid), Some(flags)) {
             Ok(t) => match t {
                 // Reap process and remove it from internal list of jobs.
                 WaitStatus::Exited(pid, status) => {
@@ -257,12 +263,10 @@ impl Shell {
                     );
                     let jid = self.pid_to_jid(pid);
                     if let Some(job_id) = jid {
-                        if signal == Signal::SIGKILL {
-                            println!("Removing {} {} due to SIGKILL", job_id, pid);
-                            // If foreground process was killed result is true.
-                            result = self.jobs[job_id].state == JobState::Foreground;
-                            self.remove_pid_from_jobs(pid);
-                        }
+                        println!("Removing {} {}", job_id, pid);
+                        // If foreground process was killed result is true.
+                        result = self.jobs[job_id].state == JobState::Foreground;
+                        self.remove_pid_from_jobs(pid);
                     }
                 }
 
