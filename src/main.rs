@@ -390,7 +390,6 @@ fn main() -> io::Result<()> {
     let mut print_prompt = true;
     loop {
         if print_prompt {
-            println!();
             print!("tsh> ");
         }
 
@@ -401,7 +400,7 @@ fn main() -> io::Result<()> {
             let fd = events[i].data();
             let stdin_fd = libc::STDIN_FILENO as u64;
             let sfd_u64 = sfd.as_raw_fd() as u64;
-            print_prompt = true;
+            print_prompt = false;
             if fd == sfd_u64 {
                 debug!("In signal handling");
                 match sfd.read_signal() {
@@ -409,7 +408,7 @@ fn main() -> io::Result<()> {
                     Ok(Some(sig)) => {
                         match sig.ssi_signo as i32 {
                             libc::SIGCHLD => {
-                                print_prompt = false;
+                                print_prompt = true;
                                 debug!("Processing SIGCHLD");
                                 // If foreground process is stopped or killed /
                                 // exited then listen again to stdin for the
@@ -425,11 +424,17 @@ fn main() -> io::Result<()> {
                             }
 
                             libc::SIGINT => {
+                                // Needed so that any further updates on the
+                                // terminal are on a newline.
+                                println!();
                                 debug!("Processing SIGINT");
                                 shell.send_signal_to_fg(Signal::SIGINT);
                             }
 
                             libc::SIGTSTP => {
+                                // Needed so that any further updates on the
+                                // terminal are on a newline.
+                                println!();
                                 debug!("Processing SIGTSTP");
                                 shell.send_signal_to_fg(Signal::SIGTSTP);
                             }
@@ -468,12 +473,16 @@ fn main() -> io::Result<()> {
 
                             if is_inbuilt_cmd {
                                 shell.run_in_built_cmd(&cmd);
+                                print_prompt = true;
                             } else {
-                                // Only print the shell prompt if the fork was
-                                // successful and the process was a non-foreground
-                                // process.
+                                // If the fork was successful and the process
+                                // was a non-foreground process then print the
+                                // prompt. If fork was unsuccessful even then
+                                // print the prompt to receive the new command.
                                 if shell.fork_and_run_cmd(cmd, is_fg) {
                                     print_prompt = !is_fg;
+                                } else {
+                                    print_prompt = true;
                                 }
                             }
                         }
