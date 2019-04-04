@@ -257,11 +257,16 @@ impl Shell {
                 }
 
                 // Change state of the job to stopped.
-                WaitStatus::Stopped(pid, signal) => {
+                WaitStatus::Stopped(pid, _) => {
                     result = true;
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
-                        println!("Job [{}] ({}) stopped by signal {}", jid, pid, signal);
+                        println!(
+                            "[{}] + {} suspended {}",
+                            jid + 1,
+                            pid,
+                            self.jobs[jid].cmd_line
+                        );
                         self.jobs[jid].state = JobState::Stopped;
                     }
                 }
@@ -272,11 +277,17 @@ impl Shell {
                         "{} signaled due to signal {} coredumped {}",
                         pid, signal, is_coredump
                     );
-                    let jid = self.pid_to_jid(pid);
-                    if let Some(job_id) = jid {
-                        debug!("Removing {} {}", job_id, pid);
+                    let job_id = self.pid_to_jid(pid);
+                    if let Some(jid) = job_id {
+                        debug!("Removing {} {}", jid, pid);
+                        println!(
+                            "[{}] + {} terminated {}",
+                            jid + 1,
+                            pid,
+                            self.jobs[jid].cmd_line
+                        );
                         // If foreground process was killed result is true.
-                        result = self.jobs[job_id].state == JobState::Foreground;
+                        result = self.jobs[jid].state == JobState::Foreground;
                         self.remove_pid_from_jobs(pid);
                     }
                 }
