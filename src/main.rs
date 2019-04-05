@@ -101,40 +101,31 @@ impl Shell {
                 return result;
             }
 
-            // Extract job id from args and send it a SIGCONT.
-            if args[1].starts_with("%") {
-                // TODO: Handle unwrap here.
-                let mut j_id =
-                    i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap() as usize;
-
-                if j_id == 0 {
-                    return result;
-                }
-
-                j_id = j_id - 1;
-                if j_id < self.jobs.len() {
-                    if self.jobs[j_id].state == JobState::Background {
+            let j_id = self.arg_to_job_id(args[1]);
+            if let Some(job_id) = j_id {
+                // |job_id| is guaranteed to be > 0 at this point.
+                let job_index = job_id - 1;
+                if job_index < self.jobs.len() {
+                    if self.jobs[job_index].state == JobState::Background {
                         println!("bg: job already in background");
                         return result;
                     }
 
-                    debug!("Job {} Pid {} sent SIGCONT", j_id, self.jobs[j_id].pid);
+                    debug!(
+                        "Job {} Pid {} sent SIGCONT",
+                        job_id, self.jobs[job_index].pid
+                    );
                     kill(
-                        Pid::from_raw(-self.jobs[j_id].pid.as_raw()),
+                        Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
                         signal::SIGCONT,
                     )
                     .unwrap();
                     result = true;
+                } else {
+                    println!("bg: {}: no such job", args[1]);
                 }
             } else {
-                let pid = i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap();
-                if let Some(j_id) = self.pid_to_jid(Pid::from_raw(pid)) {
-                    if j_id < self.jobs.len() {
-                        debug!("Job {} Pid {} sent SIGCONT", j_id, pid);
-                        kill(Pid::from_raw(-pid), signal::SIGCONT).unwrap();
-                        result = true;
-                    }
-                }
+                println!("bg: {}: no such job", args[1]);
             }
         } else if cmd.starts_with("fg") {
             debug!("fg");
@@ -358,6 +349,24 @@ impl Shell {
             self.jobs.remove(jid);
         } else {
             debug!("Can't find {} in jobs list", pid);
+        }
+    }
+
+    // |arg| could be %1 or a <pid>.
+    fn arg_to_job_id(&self, arg: &str) -> Option<usize> {
+        // Extract job id from args.
+        if arg.starts_with("%") {
+            // TODO: Handle unwrap here.
+            let j_id = i32::from_str_radix(arg.trim_start_matches("%"), 10).unwrap() as usize;
+
+            if j_id == 0 {
+                None
+            } else {
+                Some(j_id)
+            }
+        } else {
+            let pid = i32::from_str_radix(arg.trim_start_matches("%"), 10).unwrap();
+            self.pid_to_jid(Pid::from_raw(pid))
         }
     }
 }
