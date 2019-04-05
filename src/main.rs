@@ -85,72 +85,11 @@ impl Shell {
             debug!("jobs");
             self.print_jobs();
         } else if cmd.starts_with("bg") {
-            debug!("bg");
-            let args: Vec<&str> = cmd.split_whitespace().collect();
-            // Do nothing if exact number of args aren't provided to "bg".
-            if args.len() != 2 {
-                debug!("Args len mismatch {}", args.len());
-                return result;
-            }
-
-            let j_id = self.arg_to_job_id(args[1]);
-            if let Some(job_id) = j_id {
-                // |job_id| is guaranteed to be > 0 at this point.
-                let job_index = job_id - 1;
-                if job_index < self.jobs.len() {
-                    if self.jobs[job_index].state == JobState::Background {
-                        println!("bg: job already in background");
-                        return result;
-                    }
-
-                    debug!(
-                        "Job {} Pid {} sent SIGCONT",
-                        job_id, self.jobs[job_index].pid
-                    );
-                    kill(
-                        Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
-                        signal::SIGCONT,
-                    )
-                    .unwrap();
-                    result = true;
-                } else {
-                    println!("bg: {}: no such job", args[1]);
-                }
-            } else {
-                println!("bg: {}: no such job", args[1]);
-            }
+            result = self.process_bg(&cmd.split_whitespace().collect());
         } else if cmd.starts_with("fg") {
             debug!("fg");
         } else if cmd.starts_with("kill") {
-            debug!("kill");
-            let args: Vec<&str> = cmd.split_whitespace().collect();
-            // Do nothing if exact number of args aren't provided to "kill".
-            if args.len() != 2 {
-                debug!("Args len mismatch {}", args.len());
-                return result;
-            }
-
-            let j_id = self.arg_to_job_id(args[1]);
-            if let Some(job_id) = j_id {
-                // |job_id| is guaranteed to be > 0 at this point.
-                let job_index = job_id - 1;
-                if job_index < self.jobs.len() {
-                    debug!(
-                        "Job {} Pid {} sent SIGKILL",
-                        job_id, self.jobs[job_index].pid
-                    );
-                    kill(
-                        Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
-                        signal::SIGKILL,
-                    )
-                    .unwrap();
-                    result = true;
-                } else {
-                    println!("kill: {}: no such job", args[1]);
-                }
-            } else {
-                println!("kill: {}: no such job", args[1]);
-            }
+            result = self.process_kill(&cmd.split_whitespace().collect());
         }
 
         result
@@ -393,6 +332,79 @@ impl Shell {
             let pid = i32::from_str_radix(arg.trim_start_matches("%"), 10).unwrap();
             self.pid_to_jid(Pid::from_raw(pid))
         }
+    }
+
+    fn process_bg(&mut self, args: &Vec<&str>) -> bool {
+        let mut result = false;
+        debug!("bg");
+        // Do nothing if exact number of args aren't provided to "bg".
+        if args.len() != 2 {
+            debug!("Args len mismatch {}", args.len());
+            return result;
+        }
+
+        let j_id = self.arg_to_job_id(args[1]);
+        if let Some(job_id) = j_id {
+            // |job_id| is guaranteed to be > 0 at this point.
+            let job_index = job_id - 1;
+            if job_index < self.jobs.len() {
+                if self.jobs[job_index].state == JobState::Background {
+                    println!("bg: job already in background");
+                    return result;
+                }
+
+                debug!(
+                    "Job {} Pid {} sent SIGCONT",
+                    job_id, self.jobs[job_index].pid
+                );
+                kill(
+                    Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
+                    signal::SIGCONT,
+                )
+                .unwrap();
+                result = true;
+            } else {
+                println!("bg: {}: no such job", args[1]);
+            }
+        } else {
+            println!("bg: {}: no such job", args[1]);
+        }
+
+        result
+    }
+
+    fn process_kill(&mut self, args: &Vec<&str>) -> bool {
+        let mut result = false;
+        debug!("kill");
+        // Do nothing if exact number of args aren't provided to "kill".
+        if args.len() != 2 {
+            debug!("Args len mismatch {}", args.len());
+            return result;
+        }
+
+        let j_id = self.arg_to_job_id(args[1]);
+        if let Some(job_id) = j_id {
+            // |job_id| is guaranteed to be > 0 at this point.
+            let job_index = job_id - 1;
+            if job_index < self.jobs.len() {
+                debug!(
+                    "Job {} Pid {} sent SIGKILL",
+                    job_id, self.jobs[job_index].pid
+                );
+                kill(
+                    Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
+                    signal::SIGKILL,
+                )
+                .unwrap();
+                result = true;
+            } else {
+                println!("kill: {}: no such job", args[1]);
+            }
+        } else {
+            println!("kill: {}: no such job", args[1]);
+        }
+
+        result
     }
 }
 
