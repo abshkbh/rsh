@@ -66,7 +66,6 @@ impl Shell {
 
     // Returns true if a signal was sent to any job in the shell.
     pub fn run_in_built_cmd(&mut self, cmd: &str) -> bool {
-        let mut result = false;
         if cmd.starts_with("quit") {
             debug!("quit");
             // If no jobs exist then exit immediately.
@@ -80,19 +79,20 @@ impl Shell {
                 .iter()
                 .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
             self.quit_initiated = true;
-            result = true;
+            return true;
         } else if cmd.starts_with("jobs") {
             debug!("jobs");
             self.print_jobs();
+            return false;
         } else if cmd.starts_with("bg") {
-            result = self.process_bg(&cmd.split_whitespace().collect());
+            return self.process_bg(&cmd.split_whitespace().collect());
         } else if cmd.starts_with("fg") {
-            debug!("fg");
+            return self.process_fg(&cmd.split_whitespace().collect());
         } else if cmd.starts_with("kill") {
-            result = self.process_kill(&cmd.split_whitespace().collect());
+           return self.process_kill(&cmd.split_whitespace().collect());
         }
 
-        result
+        false
     }
 
     pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
@@ -335,8 +335,8 @@ impl Shell {
     }
 
     fn process_bg(&mut self, args: &Vec<&str>) -> bool {
-        let mut result = false;
         debug!("bg");
+        let mut result = false;
         // Do nothing if exact number of args aren't provided to "bg".
         if args.len() != 2 {
             debug!("Args len mismatch {}", args.len());
@@ -374,8 +374,8 @@ impl Shell {
     }
 
     fn process_kill(&mut self, args: &Vec<&str>) -> bool {
-        let mut result = false;
         debug!("kill");
+        let mut result = false;
         // Do nothing if exact number of args aren't provided to "kill".
         if args.len() != 2 {
             debug!("Args len mismatch {}", args.len());
@@ -402,6 +402,40 @@ impl Shell {
             }
         } else {
             println!("kill: {}: no such job", args[1]);
+        }
+
+        result
+    }
+
+    fn process_fg(&mut self, args: &Vec<&str>) -> bool {
+        debug!("fg");
+        let mut result = false;
+        // Do nothing if exact number of args aren't provided to "kill".
+        if args.len() != 2 {
+            debug!("Args len mismatch {}", args.len());
+            return result;
+        }
+
+        let j_id = self.arg_to_job_id(args[1]);
+        if let Some(job_id) = j_id {
+            // |job_id| is guaranteed to be > 0 at this point.
+            let job_index = job_id - 1;
+            if job_index < self.jobs.len() {
+                debug!(
+                    "Job {} Pid {} sent SIGKILL",
+                    job_id, self.jobs[job_index].pid
+                );
+                kill(
+                    Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
+                    signal::SIGKILL,
+                )
+                .unwrap();
+                result = true;
+            } else {
+                println!("fg: {}: no such job", args[1]);
+            }
+        } else {
+            println!("fg: {}: no such job", args[1]);
         }
 
         result
