@@ -72,7 +72,9 @@ impl Shell {
         }
     }
 
-    pub fn run_in_built_cmd(&mut self, cmd: &str) {
+    // Returns true if a signal was sent to any job in the shell.
+    pub fn run_in_built_cmd(&mut self, cmd: &str) -> bool {
+        let mut result = false;
         if cmd.starts_with("quit") {
             debug!("quit");
             // If no jobs exist then exit immediately.
@@ -86,6 +88,7 @@ impl Shell {
                 .iter()
                 .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
             self.quit_initiated = true;
+            result = true;
         } else if cmd.starts_with("jobs") {
             debug!("jobs");
             self.print_jobs();
@@ -95,7 +98,7 @@ impl Shell {
             // Do nothing if exact number of args aren't provided to "bg".
             if args.len() != 2 {
                 debug!("Args len mismatch {}", args.len());
-                return;
+                return result;
             }
 
             // Extract job id from args and send it a SIGCONT.
@@ -105,17 +108,23 @@ impl Shell {
                     i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap() as usize;
 
                 if j_id == 0 {
-                    return;
+                    return result;
                 }
 
                 j_id = j_id - 1;
                 if j_id < self.jobs.len() {
+                    if self.jobs[j_id].state == JobState::Background {
+                        println!("bg: job already in background");
+                        return result;
+                    }
+
                     debug!("Job {} Pid {} sent SIGCONT", j_id, self.jobs[j_id].pid);
                     kill(
                         Pid::from_raw(-self.jobs[j_id].pid.as_raw()),
                         signal::SIGCONT,
                     )
                     .unwrap();
+                    result = true;
                 }
             } else {
                 let pid = i32::from_str_radix(args[1].trim_start_matches("%"), 10).unwrap();
@@ -123,12 +132,15 @@ impl Shell {
                     if j_id < self.jobs.len() {
                         debug!("Job {} Pid {} sent SIGCONT", j_id, pid);
                         kill(Pid::from_raw(-pid), signal::SIGCONT).unwrap();
+                        result = true;
                     }
                 }
             }
         } else if cmd.starts_with("fg") {
             debug!("fg");
         }
+
+        result
     }
 
     pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
@@ -280,12 +292,15 @@ impl Shell {
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
                         debug!("Removing {} {}", jid, pid);
-                        println!(
-                            "[{}] + {} terminated {}",
-                            jid + 1,
-                            pid,
-                            self.jobs[jid].cmd_line
-                        );
+                        // Only print this if it's not in response to a "quit".
+                        if !self.quit_initiated {
+                            println!(
+                                "[{}] + {} terminated {}",
+                                jid + 1,
+                                pid,
+                                self.jobs[jid].cmd_line
+                            );
+                        }
                         // If foreground process was killed result is true.
                         result = self.jobs[jid].state == JobState::Foreground;
                         self.remove_pid_from_jobs(pid);
@@ -297,12 +312,15 @@ impl Shell {
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
                         debug!("Moving {} due to background", jid);
-                        println!(
-                            "[{}] + {} continued {}",
-                            jid + 1,
-                            pid,
-                            self.jobs[jid].cmd_line
-                        );
+                        // Only print this if it's not in response to a "quit".
+                        if !self.quit_initiated {
+                            println!(
+                                "[{}] + {} continued {}",
+                                jid + 1,
+                                pid,
+                                self.jobs[jid].cmd_line
+                            );
+                        }
                         self.jobs[jid].state = JobState::Background;
                     }
                 }
@@ -477,8 +495,12 @@ fn main() -> io::Result<()> {
                             }
 
                             if is_inbuilt_cmd {
-                                shell.run_in_built_cmd(&cmd);
-                                print_prompt = true;
+                                // Print prompt only when no signal was sent to
+                                // a job. This is done because a signal sent
+                                // would mean the signal handling would also
+                                // print out a message which should happen
+                                // before the next prompt is displayed.
+                                print_prompt = !shell.run_in_built_cmd(&cmd);
                             } else {
                                 // If the fork was successful and the process
                                 // was a non-foreground process then print the
