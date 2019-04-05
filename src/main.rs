@@ -227,8 +227,10 @@ impl Shell {
 
     fn print_jobs(&self) {
         debug!("Jobs");
+        let mut i = 1;
         for job in &self.jobs {
-            println!("{}", job)
+            println!("[{}] {}", i, job);
+            i += 1;
         }
     }
 
