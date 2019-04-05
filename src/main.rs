@@ -292,13 +292,18 @@ impl Shell {
                     }
                 }
 
-                // TODO: Handle this case.
                 WaitStatus::Continued(pid) => {
                     debug!("{} continued", pid);
-                    let jid = self.pid_to_jid(pid);
-                    if let Some(job_id) = jid {
-                        debug!("Moving {} due to background", job_id);
-                        self.jobs[job_id].state = JobState::Background;
+                    let job_id = self.pid_to_jid(pid);
+                    if let Some(jid) = job_id {
+                        debug!("Moving {} due to background", jid);
+                        println!(
+                            "[{}] + {} continued {}",
+                            jid + 1,
+                            pid,
+                            self.jobs[jid].cmd_line
+                        );
+                        self.jobs[jid].state = JobState::Background;
                     }
                 }
 
