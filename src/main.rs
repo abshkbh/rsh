@@ -129,6 +129,36 @@ impl Shell {
             }
         } else if cmd.starts_with("fg") {
             debug!("fg");
+        } else if cmd.starts_with("kill") {
+            debug!("kill");
+            let args: Vec<&str> = cmd.split_whitespace().collect();
+            // Do nothing if exact number of args aren't provided to "kill".
+            if args.len() != 2 {
+                debug!("Args len mismatch {}", args.len());
+                return result;
+            }
+
+            let j_id = self.arg_to_job_id(args[1]);
+            if let Some(job_id) = j_id {
+                // |job_id| is guaranteed to be > 0 at this point.
+                let job_index = job_id - 1;
+                if job_index < self.jobs.len() {
+                    debug!(
+                        "Job {} Pid {} sent SIGKILL",
+                        job_id, self.jobs[job_index].pid
+                    );
+                    kill(
+                        Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
+                        signal::SIGKILL,
+                    )
+                    .unwrap();
+                    result = true;
+                } else {
+                    println!("kill: {}: no such job", args[1]);
+                }
+            } else {
+                println!("kill: {}: no such job", args[1]);
+            }
         }
 
         result
@@ -337,6 +367,7 @@ impl Shell {
             || cmd.starts_with("fg")
             || cmd.starts_with("bg")
             || cmd.starts_with("quit")
+            || cmd.starts_with("kill")
         {
             return true;
         }
