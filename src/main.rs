@@ -15,14 +15,6 @@ use std::process;
 extern crate log;
 extern crate env_logger;
 
-pub enum InBuiltCmd {
-    Quit,
-    Jobs,
-    Bg(i32),
-    Fg(i32),
-    Kill(i32),
-}
-
 #[derive(PartialEq)]
 enum JobState {
     Foreground,
