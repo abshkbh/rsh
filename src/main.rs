@@ -64,8 +64,9 @@ impl Shell {
         }
     }
 
-    // Returns true if a signal was sent to any job in the shell.
-    pub fn run_in_built_cmd(&mut self, cmd: &str) -> bool {
+    // Returns (if a signal was sent to any job in the shell,
+    // stdin needs to be blocked).
+    pub fn run_in_built_cmd(&mut self, cmd: &str) -> (bool, bool) {
         if cmd.starts_with("quit") {
             debug!("quit");
             // If no jobs exist then exit immediately.
@@ -79,20 +80,20 @@ impl Shell {
                 .iter()
                 .for_each(|job| kill(Pid::from_raw(-job.pid.as_raw()), Signal::SIGKILL).unwrap());
             self.quit_initiated = true;
-            return true;
+            return (true, false);
         } else if cmd.starts_with("jobs") {
             debug!("jobs");
             self.print_jobs();
-            return false;
+            return (false, false);
         } else if cmd.starts_with("bg") {
-            return self.process_bg(&cmd.split_whitespace().collect());
+            return (self.process_bg(&cmd.split_whitespace().collect()), false);
         } else if cmd.starts_with("fg") {
             return self.process_fg(&cmd.split_whitespace().collect());
         } else if cmd.starts_with("kill") {
-           return self.process_kill(&cmd.split_whitespace().collect());
+            return (self.process_kill(&cmd.split_whitespace().collect()), false);
         }
 
-        false
+        (false, false)
     }
 
     pub fn fork_and_run_cmd(&mut self, cmd: String, is_fg: bool) -> bool {
@@ -275,6 +276,9 @@ impl Shell {
                                 self.jobs[jid].cmd_line
                             );
                         }
+                        // TODO: Handle case when this is sent via "fg", in
+                        // that case set this to JobState::Foreground and set
+                        // self.fg.
                         self.jobs[jid].state = JobState::Background;
                     }
                 }
@@ -407,13 +411,14 @@ impl Shell {
         result
     }
 
-    fn process_fg(&mut self, args: &Vec<&str>) -> bool {
+    fn process_fg(&mut self, args: &Vec<&str>) -> (bool, bool) {
         debug!("fg");
-        let mut result = false;
+        let mut signal_sent = false;
+        let mut block_stdin = false;
         // Do nothing if exact number of args aren't provided to "kill".
         if args.len() != 2 {
             debug!("Args len mismatch {}", args.len());
-            return result;
+            return (signal_sent, block_stdin);
         }
 
         let j_id = self.arg_to_job_id(args[1]);
@@ -421,16 +426,33 @@ impl Shell {
             // |job_id| is guaranteed to be > 0 at this point.
             let job_index = job_id - 1;
             if job_index < self.jobs.len() {
-                debug!(
-                    "Job {} Pid {} sent SIGKILL",
-                    job_id, self.jobs[job_index].pid
-                );
-                kill(
-                    Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
-                    signal::SIGKILL,
-                )
-                .unwrap();
-                result = true;
+                if self.jobs[job_index].state == JobState::Stopped {
+                    debug!(
+                        "Job {} Pid {} sent SIGCONT",
+                        job_id, self.jobs[job_index].pid
+                    );
+                    kill(
+                        Pid::from_raw(-self.jobs[job_index].pid.as_raw()),
+                        signal::SIGCONT,
+                    )
+                    .unwrap();
+                    signal_sent = true;
+                    block_stdin = true;
+                } else if self.jobs[job_index].state == JobState::Background {
+                    println!(
+                        "[{}] + {} running {}",
+                        job_id, self.jobs[job_index].pid, self.jobs[job_index].cmd_line
+                    );
+                    self.jobs[job_index].state = JobState::Foreground;
+                    self.fg = Some(self.jobs[job_index].pid);
+                    // Since job state is changed here, treat this as a signal
+                    // being sent. This is required so that outer loop doesn't
+                    // print prompt now that a foreground process is there.
+                    signal_sent = true;
+                    block_stdin = true;
+                } else {
+                    panic!("Not reachable");
+                }
             } else {
                 println!("fg: {}: no such job", args[1]);
             }
@@ -438,7 +460,7 @@ impl Shell {
             println!("fg: {}: no such job", args[1]);
         }
 
-        result
+        (signal_sent, block_stdin)
     }
 }
 
@@ -580,7 +602,17 @@ fn main() -> io::Result<()> {
                                 // would mean the signal handling would also
                                 // print out a message which should happen
                                 // before the next prompt is displayed.
-                                print_prompt = !shell.run_in_built_cmd(&cmd);
+                                let (signal_sent, block_stdin) = shell.run_in_built_cmd(&cmd);
+                                print_prompt = !signal_sent;
+
+                                // Can be true when an "fg" was issued.
+                                if block_stdin {
+                                    perform_epoll_op(
+                                        epoll_fd,
+                                        EpollOp::EpollCtlDel,
+                                        libc::STDIN_FILENO,
+                                    );
+                                }
                             } else {
                                 // If the fork was successful and the process
                                 // was a non-foreground process then print the
