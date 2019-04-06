@@ -137,7 +137,17 @@ impl Shell {
                 sigset.add(Signal::SIGTSTP);
                 unblock_signal(Some(&sigset));
 
-                let filename = if let Ok(filename) = CString::new(cmd) {
+                // If |cmd| is invoked in background mode then the actual
+                // command shouldn't have the trailing " &".
+                let filtered_cmd;
+                if !is_fg {
+                    filtered_cmd = cmd.trim_end_matches(" &").to_string();
+                    debug!("Trimmed cmd to: {}", cmd);
+                } else {
+                    filtered_cmd = cmd;
+                }
+
+                let filename = if let Ok(filename) = CString::new(filtered_cmd) {
                     filename
                 } else {
                     debug!("No command given");
