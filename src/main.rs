@@ -147,16 +147,29 @@ impl Shell {
                     filtered_cmd = cmd;
                 }
 
-                let filename = if let Ok(filename) = CString::new(filtered_cmd) {
-                    filename
-                } else {
-                    debug!("No command given");
-                    process::exit(-1);
-                };
+                // If filtered_cmd="a b c" then filename="a" args=["b", "c"].
+                let args = filtered_cmd.split_whitespace();
+                // TODO: Handle unwrap and understand collect args.
+                let mut cstring_args: Vec<std::ffi::CString> = Vec::new();
+                for arg in args {
+                    debug!("Arg: {}", arg);
+                    cstring_args.push(CString::new(arg).unwrap());
+                }
+                debug!(
+                    "Filtered cmd: {} filename: {}",
+                    filtered_cmd,
+                    cstring_args[0].to_str().unwrap()
+                );
 
-                // Parse args.
-                let args: [CString; 0] = [];
-                match nix::unistd::execvp(&filename, &args) {
+                // Parse env vars to pass in the forked process.
+                let mut cstring_env: Vec<std::ffi::CString> = Vec::new();
+                for (key, value) in std::env::vars_os() {
+                    debug!("{:?}: {:?}", key, value);
+                    let env_arg = format!("{}={}", key.to_str().unwrap(), value.to_str().unwrap());
+                    cstring_env.push(CString::new(env_arg).unwrap());
+                }
+
+                match nix::unistd::execve(&cstring_args[0], &cstring_args, &cstring_env) {
                     Err(e) => {
                         // Exit the forked process if exec-ing command has failed.
                         debug!("Failed to exec {}", e);
