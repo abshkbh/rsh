@@ -577,6 +577,12 @@ fn main() -> io::Result<()> {
                 let mut cmd = String::new();
                 match io::stdin().read_line(&mut cmd) {
                     Ok(_) => {
+                        // If this is an EOF just make it behave like a quit.
+                        if cmd.is_empty() {
+                            debug!("EOF");
+                            cmd = String::from("quit");
+                        }
+
                         // Remove trailing characters.
                         cmd = cmd.trim().to_string();
                         // If a foreground process will be run then remove
@@ -584,45 +590,39 @@ fn main() -> io::Result<()> {
                         // becasuse the shell should not eat the input for
                         // the process as well as the shell has to wait
                         // till the foregorund process finishes.
-                        if !cmd.is_empty() {
-                            debug!("New cmd: {}", cmd);
-                            let is_fg = !cmd.ends_with("&");
-                            let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
-                            if is_fg && !is_inbuilt_cmd {
+                        debug!("New cmd: {}", cmd);
+                        let is_fg = !cmd.ends_with("&");
+                        let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
+                        if is_fg && !is_inbuilt_cmd {
+                            perform_epoll_op(epoll_fd, EpollOp::EpollCtlDel, libc::STDIN_FILENO);
+                        }
+
+                        if is_inbuilt_cmd {
+                            // Print prompt only when no signal was sent to
+                            // a job. This is done because a signal sent
+                            // would mean the signal handling would also
+                            // print out a message which should happen
+                            // before the next prompt is displayed.
+                            let (signal_sent, block_stdin) = shell.run_in_built_cmd(&cmd);
+                            print_prompt = !signal_sent;
+
+                            // Can be true when an "fg" was issued.
+                            if block_stdin {
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
                                     libc::STDIN_FILENO,
                                 );
                             }
-
-                            if is_inbuilt_cmd {
-                                // Print prompt only when no signal was sent to
-                                // a job. This is done because a signal sent
-                                // would mean the signal handling would also
-                                // print out a message which should happen
-                                // before the next prompt is displayed.
-                                let (signal_sent, block_stdin) = shell.run_in_built_cmd(&cmd);
-                                print_prompt = !signal_sent;
-
-                                // Can be true when an "fg" was issued.
-                                if block_stdin {
-                                    perform_epoll_op(
-                                        epoll_fd,
-                                        EpollOp::EpollCtlDel,
-                                        libc::STDIN_FILENO,
-                                    );
-                                }
+                        } else {
+                            // If the fork was successful and the process
+                            // was a non-foreground process then print the
+                            // prompt. If fork was unsuccessful even then
+                            // print the prompt to receive the new command.
+                            if shell.fork_and_run_cmd(cmd, is_fg) {
+                                print_prompt = !is_fg;
                             } else {
-                                // If the fork was successful and the process
-                                // was a non-foreground process then print the
-                                // prompt. If fork was unsuccessful even then
-                                // print the prompt to receive the new command.
-                                if shell.fork_and_run_cmd(cmd, is_fg) {
-                                    print_prompt = !is_fg;
-                                } else {
-                                    print_prompt = true;
-                                }
+                                print_prompt = true;
                             }
                         }
                     }
