@@ -101,17 +101,22 @@ impl Shell {
         match result {
             Ok(ForkResult::Parent { child }) => {
                 debug!("In the Parent - Child's pid {}", child);
-                self.fg = Some(child);
                 let job_state = if is_fg {
+                    self.fg = Some(child);
                     JobState::Foreground
                 } else {
                     JobState::Background
                 };
                 self.jobs.push(Job {
                     pid: child,
-                    cmd_line: cmd,
+                    cmd_line: cmd.clone(),
                     state: job_state,
                 });
+
+                // Print job info if its a background job.
+                if !is_fg {
+                    println!("[{}] ({}) {}", self.jobs.len(), child.as_raw(), cmd)
+                }
             }
 
             Ok(ForkResult::Child) => {
@@ -164,7 +169,6 @@ impl Shell {
                 // Parse env vars to pass in the forked process.
                 let mut cstring_env: Vec<std::ffi::CString> = Vec::new();
                 for (key, value) in std::env::vars_os() {
-                    debug!("{:?}: {:?}", key, value);
                     let env_arg = format!("{}={}", key.to_str().unwrap(), value.to_str().unwrap());
                     cstring_env.push(CString::new(env_arg).unwrap());
                 }
@@ -504,7 +508,10 @@ fn unblock_signal(sigset: Option<&SigSet>) {
 fn perform_epoll_op(epfd: RawFd, op: EpollOp, fd: RawFd) {
     // Event doesn't matter if op maps to EPOLL_CTL_DEL
     let mut epoll_event = EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLWAKEUP, fd as u64);
-    epoll_ctl(epfd, op, fd, &mut epoll_event).unwrap();
+    match epoll_ctl(epfd, op, fd, &mut epoll_event) {
+        Err(e) => debug!("Epoll err {}", e),
+        _ => (),
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -617,6 +624,7 @@ fn main() -> io::Result<()> {
                         let is_fg = !cmd.ends_with("&");
                         let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
                         if is_fg && !is_inbuilt_cmd {
+                            debug!("Block stdin");
                             perform_epoll_op(epoll_fd, EpollOp::EpollCtlDel, libc::STDIN_FILENO);
                         }
 
@@ -631,6 +639,7 @@ fn main() -> io::Result<()> {
 
                             // Can be true when an "fg" was issued.
                             if block_stdin {
+                                debug!("Block stdin");
                                 perform_epoll_op(
                                     epoll_fd,
                                     EpollOp::EpollCtlDel,
