@@ -31,6 +31,10 @@ struct Job {
 
     // Current state of the job.
     state: JobState,
+
+    // Indicates that a SIGCONT was sent to this job in |process_fg|. Used to
+    // differentiate from SIGCONT sent by |process_bg|.
+    sigcont_sent_by_fg: bool,
 }
 
 impl fmt::Display for Job {
@@ -112,6 +116,7 @@ impl Shell {
                     pid: child,
                     cmd_line: cmd.clone(),
                     state: job_state,
+                    sigcont_sent_by_fg: false,
                 });
 
                 // Print job info if its a background job.
@@ -294,15 +299,20 @@ impl Shell {
                     debug!("{} continued", pid);
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
-                        debug!("Moving {} due to background", jid);
                         // Only print this if it's not in response to a "quit".
                         if !self.quit_initiated {
                             println!("[{}] ({}) {}", jid + 1, pid, self.jobs[jid].cmd_line);
                         }
-                        // TODO: Handle case when this is sent via "fg", in
-                        // that case set this to JobState::Foreground and set
-                        // self.fg.
-                        self.jobs[jid].state = JobState::Background;
+
+                        // If this was sent by a fg command then make this job the fg
+                        // job. Else keep it as a backgroung job.
+                        if self.jobs[jid].sigcont_sent_by_fg {
+                            debug!("SIGCONT sent by fg");
+                            self.jobs[jid].sigcont_sent_by_fg = false;
+                        } else {
+                            debug!("SIGCONT sent by bg");
+                            self.jobs[jid].state = JobState::Background;
+                        }
                     }
                 }
 
@@ -471,6 +481,11 @@ impl Shell {
                     .unwrap();
                     signal_sent = true;
                     block_stdin = true;
+                    // This is set to differentiate from a SIGCONT sent via
+                    // "bg".
+                    self.jobs[job_index].sigcont_sent_by_fg = true;
+                    self.jobs[job_index].state = JobState::Foreground;
+                    self.fg = Some(self.jobs[job_index].pid);
                 } else if self.jobs[job_index].state == JobState::Background {
                     println!(
                         "[{}] + {} running {}",
@@ -544,6 +559,7 @@ fn main() -> io::Result<()> {
     let mut sfd = SignalFd::with_flags(&sigset, sfd_flags).unwrap();
 
     // Create epoll fd to monitor stdin for commands and signal fd for signals.
+    debug!("Add stdin");
     let epoll_fd = epoll_create1(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
     perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, libc::STDIN_FILENO);
     perform_epoll_op(epoll_fd, EpollOp::EpollCtlAdd, sfd.as_raw_fd());
@@ -576,6 +592,7 @@ fn main() -> io::Result<()> {
                                 // next command.
                                 if shell.reap_children() {
                                     debug!("Reaped foreground process");
+                                    debug!("Add stdin");
                                     perform_epoll_op(
                                         epoll_fd,
                                         EpollOp::EpollCtlAdd,
