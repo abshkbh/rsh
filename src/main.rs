@@ -297,12 +297,7 @@ impl Shell {
                         debug!("Moving {} due to background", jid);
                         // Only print this if it's not in response to a "quit".
                         if !self.quit_initiated {
-                            println!(
-                                "[{}] + {} continued {}",
-                                jid + 1,
-                                pid,
-                                self.jobs[jid].cmd_line
-                            );
+                            println!("[{}] ({}) {}", jid + 1, pid, self.jobs[jid].cmd_line);
                         }
                         // TODO: Handle case when this is sent via "fg", in
                         // that case set this to JobState::Foreground and set
