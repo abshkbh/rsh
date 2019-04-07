@@ -36,12 +36,13 @@ struct Job {
 impl fmt::Display for Job {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let state_display = if let JobState::Stopped = self.state {
-            String::from("stopped")
+            String::from("Stopped")
         } else {
-            String::from("running")
+            String::from("Running")
         };
 
-        write!(f, "+ {} {}", state_display, self.cmd_line).expect("Failed to display a job");
+        write!(f, "({}) {}\t{}", self.pid, state_display, self.cmd_line)
+            .expect("Failed to display a job");
         Ok(())
     }
 }
