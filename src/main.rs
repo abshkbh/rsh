@@ -278,10 +278,10 @@ impl Shell {
                         // Only print this if it's not in response to a "quit".
                         if !self.quit_initiated {
                             println!(
-                                "[{}] + {} terminated {}",
+                                "Job [{}] ({}) terminated by signal {:?}",
                                 jid + 1,
                                 pid,
-                                self.jobs[jid].cmd_line
+                                Shell::signal_to_i32(signal)
                             );
                         }
                         // If foreground process was killed result is true.
@@ -325,6 +325,15 @@ impl Shell {
 
     fn pid_to_jid(&self, pid: Pid) -> Option<usize> {
         self.jobs.iter().position(|job| (*job).pid == pid)
+    }
+
+    fn signal_to_i32(signal: nix::sys::signal::Signal) -> i32 {
+        match signal {
+            Signal::SIGKILL => libc::SIGKILL,
+            Signal::SIGINT => libc::SIGINT,
+            // TODO: Match everything else.
+            _ => -255,
+        }
     }
 
     fn is_inbuilt_cmd(cmd: &str) -> bool {
