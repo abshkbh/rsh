@@ -315,8 +315,8 @@ impl Shell {
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
                         result = Some(t);
-                        // Only print this if it's not in response to a "quit".
-                        if !self.quit_initiated {
+                        // Only print this if it's not in response to a "quit" or an "fg".
+                        if !self.quit_initiated && !self.jobs[jid].sigcont_sent_by_fg {
                             println!("[{}] ({}) {}", jid + 1, pid, self.jobs[jid].cmd_line);
                         }
 
