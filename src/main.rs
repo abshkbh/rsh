@@ -252,15 +252,15 @@ impl Shell {
                 }
 
                 // Change state of the job to stopped.
-                WaitStatus::Stopped(pid, _) => {
+                WaitStatus::Stopped(pid, signal) => {
                     result = true;
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
                         println!(
-                            "[{}] + {} suspended {}",
+                            "Job [{}] ({}) stopped by signal {}",
                             jid + 1,
                             pid,
-                            self.jobs[jid].cmd_line
+                            Shell::signal_to_i32(signal)
                         );
                         self.jobs[jid].state = JobState::Stopped;
                     }
@@ -331,6 +331,7 @@ impl Shell {
         match signal {
             Signal::SIGKILL => libc::SIGKILL,
             Signal::SIGINT => libc::SIGINT,
+            Signal::SIGTSTP => libc::SIGTSTP,
             // TODO: Match everything else.
             _ => -255,
         }
