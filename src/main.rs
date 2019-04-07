@@ -215,22 +215,38 @@ impl Shell {
     }
 
     // Reaps children that are ready for reaping. Returns true iff foreground
-    // process is reaped.
-    fn reap_children(&mut self) -> bool {
-        let mut result = false;
+    // process is reaped. Returns (fg_rcvd_event, any_bg_rcvd_event).
+    fn reap_children(&mut self) -> (bool, bool) {
+        let mut fg_rcvd_event = false;
         // First reap foreground process and then all other children.
         if let Some(pid) = self.fg {
             debug!("Wait for foreground process");
-            result = self.wait_for_child(pid);
-            if result {
+            let result = self.wait_for_child(pid);
+            // Foreground process blocks so it must have had some event at this
+            // point i.e. either stopped, background or ended.
+            if result.is_some() {
+                fg_rcvd_event = true;
                 self.fg = None;
+            } else {
+                fg_rcvd_event = false;
             }
         }
 
         debug!("Wait for remaining processes");
+        // Reap background processes and only indicate they received an event if
+        // they didn't exit by themselves.
         let job_pids: Vec<Pid> = self.jobs.iter().map(|job| job.pid).collect();
+        let mut any_bg_rcvd_event = false;
         for pid in job_pids {
-            self.wait_for_child(pid);
+            let result = self.wait_for_child(pid);
+            if let Some(t) = result {
+                match t {
+                    WaitStatus::Exited(_, _) => any_bg_rcvd_event |= false,
+                    _ => any_bg_rcvd_event |= true,
+                }
+            } else {
+                any_bg_rcvd_event |= false;
+            }
         }
 
         // If this is a reap after a "quit" was issued then exit the terminal.
@@ -238,11 +254,11 @@ impl Shell {
             process::exit(0);
         }
 
-        result
+        (fg_rcvd_event, any_bg_rcvd_event)
     }
 
-    fn wait_for_child(&mut self, pid: Pid) -> bool {
-        let mut result = false;
+    fn wait_for_child(&mut self, pid: Pid) -> Option<WaitStatus> {
+        let mut result = None;
         let mut flags = WaitPidFlag::empty();
         flags.set(WaitPidFlag::WNOHANG, true);
         flags.set(WaitPidFlag::WUNTRACED, true);
@@ -251,14 +267,14 @@ impl Shell {
             Ok(t) => match t {
                 // Reap process and remove it from internal list of jobs.
                 WaitStatus::Exited(pid, status) => {
-                    result = true;
+                    result = Some(t);
                     debug!("{} exited with {}", pid, status);
                     self.remove_pid_from_jobs(pid);
                 }
 
                 // Change state of the job to stopped.
                 WaitStatus::Stopped(pid, signal) => {
-                    result = true;
+                    result = Some(t);
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
                         println!(
@@ -279,6 +295,7 @@ impl Shell {
                     );
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
+                        result = Some(t);
                         debug!("Removing {} {}", jid, pid);
                         // Only print this if it's not in response to a "quit".
                         if !self.quit_initiated {
@@ -289,8 +306,6 @@ impl Shell {
                                 Shell::signal_to_i32(signal)
                             );
                         }
-                        // If foreground process was killed result is true.
-                        result = self.jobs[jid].state == JobState::Foreground;
                         self.remove_pid_from_jobs(pid);
                     }
                 }
@@ -299,6 +314,7 @@ impl Shell {
                     debug!("{} continued", pid);
                     let job_id = self.pid_to_jid(pid);
                     if let Some(jid) = job_id {
+                        result = Some(t);
                         // Only print this if it's not in response to a "quit".
                         if !self.quit_initiated {
                             println!("[{}] ({}) {}", jid + 1, pid, self.jobs[jid].cmd_line);
@@ -585,12 +601,16 @@ fn main() -> io::Result<()> {
                     Ok(Some(sig)) => {
                         match sig.ssi_signo as i32 {
                             libc::SIGCHLD => {
-                                print_prompt = true;
-                                debug!("Processing SIGCHLD");
                                 // If foreground process is stopped or killed /
                                 // exited then listen again to stdin for the
                                 // next command.
-                                if shell.reap_children() {
+                                let (fg_rcvd_event, any_bg_rcvd_event) = shell.reap_children();
+                                debug!(
+                                    "Processing SIGCHLD fg {} bg {}",
+                                    fg_rcvd_event, any_bg_rcvd_event
+                                );
+                                if fg_rcvd_event {
+                                    print_prompt = true;
                                     debug!("Reaped foreground process");
                                     debug!("Add stdin");
                                     perform_epoll_op(
@@ -598,6 +618,13 @@ fn main() -> io::Result<()> {
                                         EpollOp::EpollCtlAdd,
                                         libc::STDIN_FILENO,
                                     );
+                                }
+
+                                // This could be false if a bg process silently
+                                // exited; no need to show prompt then. Also,
+                                // stdin should already be in epoll set.
+                                if any_bg_rcvd_event {
+                                    print_prompt = true;
                                 }
                             }
 
