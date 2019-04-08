@@ -235,40 +235,33 @@ impl Shell {
     // Reaps children that are ready for reaping. Returns true iff foreground
     // process is reaped. Returns (fg_rcvd_event, any_bg_rcvd_event).
     fn reap_children(&mut self) -> (bool, bool) {
-        let mut fg_rcvd_event = false;
-        // First reap foreground process and then all other children.
-        if let Some(pid) = self.fg {
-            debug!("Wait for foreground process");
-            let result = self.wait_for_child(pid);
-            // Foreground process blocks so it must have had some event at this
-            // point i.e. either stopped, background or ended.
-            if result.is_some() {
-                fg_rcvd_event = true;
-                self.fg = None;
-            } else {
-                fg_rcvd_event = false;
-            }
-        }
-
-        debug!("Wait for remaining processes");
+        debug!("Waiting for all processes");
         // Reap background processes and only indicate they received an event if
         // they didn't exit by themselves.
-        let job_pids: Vec<Pid> = self
-            .jobs
-            .iter()
-            .filter(|job| job.state != JobState::Foreground)
-            .map(|job| job.pid)
-            .collect();
+        let job_pids: Vec<Pid> = self.jobs.iter().map(|job| job.pid).collect();
+        let mut fg_rcvd_event = false;
         let mut any_bg_rcvd_event = false;
         for pid in job_pids {
+            let is_fg = self.jobs[self
+                .pid_to_jid(pid)
+                .expect("Job should exist at this point")]
+            .state
+                == JobState::Foreground;
             let result = self.wait_for_child(pid);
             if let Some(t) = result {
-                match t {
-                    WaitStatus::Exited(_, _) => any_bg_rcvd_event |= false,
-                    _ => any_bg_rcvd_event |= true,
+                if is_fg {
+                    debug!("fg process {} got event: {:?}", pid, t);
+                    fg_rcvd_event = true;
+                    self.fg = None;
+                } else {
+                    debug!("bg process {} got event: {:?}", pid, t);
+                    match t {
+                        // When bg processes exit it isn't counted as an event
+                        // as it should make no difference to stdout.
+                        WaitStatus::Exited(_, _) => (),
+                        _ => any_bg_rcvd_event |= true,
+                    }
                 }
-            } else {
-                any_bg_rcvd_event |= false;
             }
         }
 
