@@ -14,6 +14,12 @@ use std::process;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate log4rs;
+
+use log::LevelFilter;
+use log4rs::append::file::FileAppender;
+use log4rs::config::{Appender, Config, Root};
+use log4rs::encode::pattern::PatternEncoder;
 
 #[derive(PartialEq)]
 enum JobState {
@@ -563,8 +569,28 @@ fn perform_epoll_op(epfd: RawFd, op: EpollOp, fd: RawFd) {
     }
 }
 
+fn setup_logging() {
+    let logfile = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("{l} - {m}\n")))
+        .build("log/output.log")
+        .unwrap();
+
+    let config = Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .build(LevelFilter::Debug),
+        )
+        .unwrap();
+
+    log4rs::init_config(config).unwrap();
+
+    info!("Hello, world!");
+}
+
 fn main() -> io::Result<()> {
-    env_logger::init();
+    setup_logging();
 
     let mut shell = Shell::new();
 
