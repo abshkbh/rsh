@@ -253,7 +253,12 @@ impl Shell {
         debug!("Wait for remaining processes");
         // Reap background processes and only indicate they received an event if
         // they didn't exit by themselves.
-        let job_pids: Vec<Pid> = self.jobs.iter().map(|job| job.pid).collect();
+        let job_pids: Vec<Pid> = self
+            .jobs
+            .iter()
+            .filter(|job| job.state != JobState::Foreground)
+            .map(|job| job.pid)
+            .collect();
         let mut any_bg_rcvd_event = false;
         for pid in job_pids {
             let result = self.wait_for_child(pid);
