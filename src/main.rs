@@ -159,12 +159,24 @@ impl Shell {
                 }
 
                 // If filtered_cmd="a b c" then filename="a" args=["b", "c"].
-                let args = filtered_cmd.split_whitespace();
-                // TODO: Handle unwrap and understand collect args.
+                // The first split is done to handle any arguments within
+                // quotes. Then the first part is split on a whitespace as a traditional
+                // command.
+                let mut args = filtered_cmd.split(|c| c == '\'');
                 let mut cstring_args: Vec<std::ffi::CString> = Vec::new();
-                for arg in args {
+                let filtered_cmd_before_quote = args.next().unwrap();
+                let filtered_cmd_before_quote = filtered_cmd_before_quote.split_whitespace();
+                // TODO: Handle unwrap and understand collect args.
+                for arg in filtered_cmd_before_quote {
                     debug!("Arg: {}", arg);
                     cstring_args.push(CString::new(arg).unwrap());
+                }
+                for arg in args {
+                    // To prevent empty strings at the end in case of args within quotes.
+                    if !arg.is_empty() {
+                        debug!("Arg: {:}", arg);
+                        cstring_args.push(CString::new(arg).unwrap());
+                    }
                 }
                 debug!(
                     "Filtered cmd: {} filename: {}",
