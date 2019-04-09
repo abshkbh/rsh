@@ -724,10 +724,6 @@ fn main() -> io::Result<()> {
                         debug!("New cmd: {}", cmd);
                         let is_fg = !cmd.ends_with("&");
                         let is_inbuilt_cmd = Shell::is_inbuilt_cmd(&cmd);
-                        if is_fg && !is_inbuilt_cmd {
-                            debug!("Block stdin");
-                            perform_epoll_op(epoll_fd, EpollOp::EpollCtlDel, libc::STDIN_FILENO);
-                        }
 
                         if is_inbuilt_cmd {
                             // Print prompt only when no signal was sent to
@@ -748,14 +744,33 @@ fn main() -> io::Result<()> {
                                 );
                             }
                         } else {
+                            // A foreground process blocks.
+                            if is_fg {
+                                debug!("Block stdin");
+                                perform_epoll_op(
+                                    epoll_fd,
+                                    EpollOp::EpollCtlDel,
+                                    libc::STDIN_FILENO,
+                                );
+                            }
+
                             // If the fork was successful and the process
                             // was a non-foreground process then print the
                             // prompt. If fork was unsuccessful even then
-                            // print the prompt to receive the new command.
+                            // print the prompt to receive the new command also
+                            // re-monitor stdin if it was blocked before.
                             if shell.fork_and_run_cmd(cmd, is_fg) {
                                 print_prompt = !is_fg;
                             } else {
                                 print_prompt = true;
+                                if is_fg {
+                                    debug!("Add stdin");
+                                    perform_epoll_op(
+                                        epoll_fd,
+                                        EpollOp::EpollCtlAdd,
+                                        libc::STDIN_FILENO,
+                                    );
+                                }
                             }
                         }
                     }
