@@ -249,8 +249,17 @@ impl Shell {
             if let Some(t) = result {
                 if is_fg {
                     debug!("fg process {} got event: {:?}", pid, t);
-                    fg_rcvd_event = true;
-                    self.fg = None;
+                    match t {
+                        // Continued means that the fg process is still running.
+                        // Note that this was set as the fg job already in
+                        // |process_fg|, so only stopped / signaled / exited
+                        // count as an event.
+                        WaitStatus::Continued(_) => (),
+                        _ => {
+                            fg_rcvd_event = true;
+                            self.fg = None;
+                        }
+                    }
                 } else {
                     debug!("bg process {} got event: {:?}", pid, t);
                     match t {
