@@ -568,9 +568,15 @@ fn perform_epoll_op(epfd: RawFd, op: EpollOp, fd: RawFd) {
 }
 
 fn setup_logging() {
+    let custom_log_env = "MY_SHELL_LOG";
+    let log_filename = match std::env::var_os(custom_log_env) {
+        Some(file) => file,
+        None => std::ffi::OsString::from("log/output.log"),
+    };
+
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new("{l} - {m}\n")))
-        .build("log/output.log")
+        .build(log_filename.clone())
         .unwrap();
 
     let config = Config::builder()
@@ -583,8 +589,10 @@ fn setup_logging() {
         .unwrap();
 
     log4rs::init_config(config).unwrap();
-
-    info!("Hello, world!");
+    debug!(
+        "Logging to: {}",
+        log_filename.to_str().expect("Logger not set")
+    );
 }
 
 fn main() -> io::Result<()> {
