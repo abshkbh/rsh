@@ -174,13 +174,11 @@ impl Shell {
                 let filtered_cmd_before_quote = filtered_cmd_before_quote.split_whitespace();
                 // TODO: Handle unwrap and understand collect args.
                 for arg in filtered_cmd_before_quote {
-                    debug!("Arg: {}", arg);
                     cstring_args.push(CString::new(arg).unwrap());
                 }
                 for arg in args {
                     // To prevent empty strings at the end in case of args within quotes.
                     if !arg.is_empty() {
-                        debug!("Arg: {:}", arg);
                         cstring_args.push(CString::new(arg).unwrap());
                     }
                 }
